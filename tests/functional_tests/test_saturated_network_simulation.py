@@ -1,5 +1,6 @@
 from math import floor
 
+import pytest
 from numpy.testing import assert_almost_equal
 
 from pyqumo.distributions import Constant
@@ -22,6 +23,7 @@ CWMAX = 8
 SPEED_OF_LIGHT = 1e5   # meters per second
 
 
+@pytest.mark.skip
 def test_saturated_network_without_collisions():
     radius = 100
     stime_limit = 500
@@ -97,6 +99,7 @@ def test_saturated_network_without_collisions():
     assert client.source.packet_sizes.mean() == PAYLOAD
 
 
+@pytest.mark.skip
 def test_saturated_network_with_collisions():
     radius = 100 / (3 ** 0.5)
     stime_limit = 10000

@@ -1,3 +1,4 @@
+import pytest
 from numpy.testing import assert_almost_equal
 
 from pycsmaca.analytic import bianchi_time
@@ -19,6 +20,7 @@ CWMAX = 8
 SPEED_OF_LIGHT = 1e5   # meters per second
 
 
+@pytest.mark.skip
 def test_bianchi_time_without_collisions():
     radius = 100
 

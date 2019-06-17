@@ -1,5 +1,6 @@
 from math import floor
 
+import pytest
 from numpy.testing import assert_almost_equal, assert_allclose
 
 from pyqumo.distributions import Constant, Exponential
@@ -23,6 +24,7 @@ SPEED_OF_LIGHT = 1e5   # meters per second
 ARRIVAL_MEAN = 2
 
 
+@pytest.mark.skip
 def test_network_without_collisions():
     radius = 100
     stime_limit = 500
