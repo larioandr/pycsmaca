@@ -1,6 +1,7 @@
+import pytest
 from pydesim import Model
 from unittest.mock import Mock, patch
-from pycsmaca.simulations.modules.app_layer import RandomSource
+from pycsmaca.simulations.modules.app_layer import RandomSource, AppData
 
 
 # noinspection PyProtectedMember
@@ -38,3 +39,22 @@ def test_random_source_generates_packets():
 
     # Make sure that after the _generate() call another event was scheduled:
     sim.schedule.assert_any_call(21, source._generate)
+
+
+# noinspection PyPropertyAccess
+def test_app_data_is_immutable():
+    app_data = AppData(dest_addr=5, size=20, source_id=13)
+    assert app_data.dest_addr == 5
+    assert app_data.size == 20
+    assert app_data.source_id == 13
+    with pytest.raises(AttributeError):
+        app_data.dest_addr = 11
+    with pytest.raises(AttributeError):
+        app_data.size = 21
+    with pytest.raises(AttributeError):
+        app_data.source_id = 26
+
+
+def test_app_data_provides_str():
+    app_data = AppData(dest_addr=1, size=250, source_id=2)
+    assert str(app_data) == 'AppData{sid=2,dst=1,size=250}'

@@ -3,7 +3,28 @@ from pydesim import Model
 
 class AppData:
     def __init__(self, dest_addr, size, source_id):
-        pass
+        self.__dest_addr = dest_addr
+        self.__size = size
+        self.__source_id = source_id
+
+    @property
+    def dest_addr(self):
+        return self.__dest_addr
+
+    @property
+    def size(self):
+        return self.__size
+
+    @property
+    def source_id(self):
+        return self.__source_id
+
+    def __str__(self):
+        fields = ','.join([
+            f'sid={self.source_id}', f'dst={self.dest_addr}',
+            f'size={self.size}'
+        ])
+        return f'AppData{{{fields}}}'
 
 
 class RandomSource(Model):
