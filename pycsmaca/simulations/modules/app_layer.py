@@ -1,11 +1,14 @@
 from pydesim import Model, Intervals, Statistic
 
+from pycsmaca.utilities import ReadOnlyDict
+
 
 class AppData:
-    def __init__(self, dest_addr, size, source_id):
+    def __init__(self, dest_addr, size, source_id, created_at):
         self.__dest_addr = dest_addr
         self.__size = size
         self.__source_id = source_id
+        self.__created_at = created_at
 
     @property
     def dest_addr(self):
@@ -19,10 +22,14 @@ class AppData:
     def source_id(self):
         return self.__source_id
 
+    @property
+    def created_at(self):
+        return self.__created_at
+
     def __str__(self):
         fields = ','.join([
             f'sid={self.source_id}', f'dst={self.dest_addr}',
-            f'size={self.size}'
+            f'size={self.size}', f'ct={self.created_at}'
         ])
         return f'AppData{{{fields}}}'
 
@@ -116,8 +123,10 @@ class RandomSource(Model):
         except StopIteration:
             pass  # do nothing if stop iteration fired
         else:
-            app_data = AppData(dest_addr=self.dest_addr, size=data_size,
-                               source_id=self.source_id)
+            app_data = AppData(
+                dest_addr=self.dest_addr, size=data_size,
+                source_id=self.source_id, created_at=self.sim.stime
+            )
             self.connections['network'].send(app_data)
             self.__schedule_next_arrival()
             # Recording statistics:
@@ -151,5 +160,52 @@ class RandomSource(Model):
 
 
 class Sink(Model):
+    """Accepts `AppData` sink, records end-to-end delays and other statistics.
+
+    This module is expected to be placed on top of network layer. It accepts
+    any `AppData` and records end-to-end delays per source ID. Besides that,
+    it records inter-arrival times for all received packets, as well as
+    their sizes, without differentiating them by source ID.
+
+    Statistics:
+    - `source_delays`: `ReadOnlyDict`, storing `Statistic` objects as values
+        and source IDs as keys;
+    - `arrival_intervals`: `Interval` object, stores inter-arrival intervals;
+    - `data_size_stat`: `Statistic`, stores received payload sizes.
+
+    Connections: doesn't specify connections, however, expected to be bound
+        to network layer.
+
+    Handlers:
+    - `handle_message(app_data)`: anything received is treated as `AppData`
+        from network layer; connection names or modules not analyzed.
+    """
     def __init__(self, sim):
         super().__init__(sim)
+        self.__source_delays_data = {}
+        self.__source_delays = ReadOnlyDict(self.__source_delays_data)
+        self.__arrival_intervals = Intervals()
+        self.__data_size_stat = Statistic()
+
+    @property
+    def arrival_intervals(self):
+        return self.__arrival_intervals
+
+    @property
+    def data_size_stat(self):
+        return self.__data_size_stat
+
+    @property
+    def source_delays(self):
+        return self.__source_delays
+
+    def handle_message(self, app_data, sender=None, connection=None):
+        sid = app_data.source_id
+        if sid not in self.source_delays:
+            self.__source_delays_data[sid] = Statistic()
+        self.source_delays[sid].append(self.sim.stime - app_data.created_at)
+        self.arrival_intervals.record(self.sim.stime)
+        self.data_size_stat.append(app_data.size)
+
+    def __str__(self):
+        return 'Sink'
