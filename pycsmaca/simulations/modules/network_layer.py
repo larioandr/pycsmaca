@@ -4,6 +4,30 @@ from pycsmaca.utilities import ReadOnlyDict
 
 
 class NetworkPacket:
+    """NetworkPacket is a message that is being used on the network layer.
+
+    It introduces four addresses:
+
+    - destination address (`dst_addr`) - address of the interface the packet
+        is destined to (taken from e.g. `AppData`);
+
+    - source address (`src_addr`) - address of the interface that originated
+        the packet, i.e. sent it for the first time;
+
+    - sender address (`snd_addr`) - address of the interface that last sent
+        the packet;
+
+    - receiver address (`rcv_addr`) - address of the interface that is expected
+        to receive the packet in the latest transmission.
+
+    Besides these addresses, `NetworkPacket` stores Source Sequence Number
+    (SSN) that is used to filter old packets. SSNs are records per
+    `src_addr` of the received or originated packet. If `NetworkSwitch`
+    receives a packet with the same or smaller SSN, it ignores the message.
+
+    `NetworkPacket` can also handle a payload (`data`), which is expected
+    to be `AppData`.
+    """
     def __init__(self, dst_addr=None, src_addr=None, rcv_addr=None,
                  snd_addr=None, ssn=None, data=None):
         self.dst_addr = dst_addr
@@ -26,6 +50,28 @@ class NetworkPacket:
 
 
 class NetworkService(Model):
+    """Represents an interface between applications and `NetworkSwitch`.
+
+    This module is aimed at encapsulation and decapsulation of `NetworkPacket`
+    and `AppData` messages. During handling the message, it inspects the
+    connection the message was received within.
+
+    If the message was received from the user (via `'source'` connection),
+    `NetworkService` creates a new `NetworkPacket` and fills its `dst_addr`
+    and `data` fields.
+
+    If the message was received from the network (via `'network'` connection),
+    it decapsulates the message and send `pkt.data` (which is expected to be
+    `AppData` instance) to the application layer via `'sink'` connection.
+
+    Connections:
+    - `'network'`: (mandatory) - connects to `NetworkSwitch` module (net layer);
+    - `'source'`: (mandatory) - connects to `Source` module (app layer);
+    - `'sink'`: (mandatory) - connects to `Sink` module (app layer).
+
+    Connection `'sink'` MAY be unidirectional (from `NetworkService` to `Sink`).
+    Other connections MUST be bidirectional.
+     """
     def __init__(self, sim):
         super().__init__(sim)
 
@@ -45,6 +91,18 @@ class NetworkService(Model):
 
 
 class SwitchTable:
+    """Represents network layer routing table.
+
+    Stores routes in the form `dst_addr -> Link`, where `SwitchTable.Link`
+    has `connection` field and `next_hop` field.
+
+    > IMPORTANT: `connection` is the connections name, not he connection itself.
+
+    Links are added using `add()` method. They later can be grabbed with
+    square brackets (like in dictionary).
+
+    Records MAY be updated later during the simulation.
+    """
     class Link:
         def __init__(self, connection, next_hop):
             self.connection = connection
@@ -85,6 +143,29 @@ class SwitchTable:
 
 
 class NetworkSwitch(Model):
+    """Model of the network switch (router). Right now supports static routes.
+
+    This module performs packet forwarding between connected interfaces,
+    user-generated packets forwarding and delivery if the destination address
+    matches one of the interface addresses.
+
+    Connections:
+    - `'user'` (mandatory, bi-directional): connection to `NetworkService`;
+    - any other: connection to the network interface.
+
+    For each packet, this module inspects its routing table (`SwitchTable`).
+    If it knows the route to the destination interface, it sets sender address
+    of the packet equal to address of the interface the packet will be sent
+    from, and sends the packet via `Link.connection`, stored in the routing
+    table.
+
+    `NetworkSwitch` also records and checks SSN values. If the packet is too
+    old (previous stored value of the SSN is less or equal to the received one),
+    the packet is discarded.
+
+    Since packets coming from `NetworkService` originally have only `dst_addr`
+    and `data` filled, this module also fills SSN `and `src_addr`.
+    """
     def __init__(self, sim):
         super().__init__(sim)
         self.__table = SwitchTable()
