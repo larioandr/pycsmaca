@@ -1,9 +1,10 @@
 from unittest.mock import Mock, patch, MagicMock
 
+import pytest
 from pydesim import Model
 
 from pycsmaca.simulations.modules.network_layer import NetworkService, \
-    NetworkPacket
+    NetworkPacket, SwitchTable, NetworkSwitch
 
 NET_PACKET_CLASS = 'pycsmaca.simulations.modules.network_layer.NetworkPacket'
 
@@ -149,3 +150,367 @@ def test_network_packet_implements_str():
     assert str(pkt1) == f'NetPkt{{DST=10,SRC=2,SND=5,RCV=6,SSN=4 | {data}}}'
     assert str(pkt2) == f'NetPkt{{DST=5 | {data}}}'
     assert str(pkt3) == f'NetPkt{{DST=8}}'
+
+
+#############################################################################
+# TEST SwitchTable
+#############################################################################
+def test_switch_table_add_and_as_tuple_methods():
+    table = SwitchTable()
+    table.add(10, connection='eth0', next_hop=4)
+    table.add(22, connection='eth1', next_hop=3)
+    assert table.as_dict() == {10: ('eth0', 4), 22: ('eth1', 3)}
+
+
+def test_switch_table_as_dict_returns_read_only_dict():
+    table = SwitchTable()
+    with pytest.raises(TypeError):
+        table.as_dict()[13] = ('illegal', 66)
+
+
+def test_switch_table_getitem_method():
+    table = SwitchTable()
+    table.add(10, connection='eth0', next_hop=4)
+
+    link1 = table[10]
+    assert link1.connection == 'eth0'
+    assert link1.next_hop == 4
+
+    with pytest.raises(KeyError):
+        print(table[22])
+
+
+def test_switch_table_record_can_be_updated():
+    table = SwitchTable()
+    table.add(13, connection='wifi', next_hop=5)
+
+    link = table[13]
+    link.connection = 'ge'
+    link.next_hop = 24
+
+    assert table.as_dict() == {13: ('ge', 24)}
+
+
+def test_switch_table_provides_get_method():
+    table = SwitchTable()
+    table.add(13, connection='wifi', next_hop=5)
+
+    assert table.get(13).connection == 'wifi'
+    assert table.get(22) is None
+
+
+def test_switch_table_implements_contains_magic_method():
+    table = SwitchTable()
+    table.add(13, connection='wifi', next_hop=5)
+
+    assert 13 in table
+    assert 14 not in table
+
+
+def test_switch_table_add_replaces_existing_record():
+    table = SwitchTable()
+    table.add(10, connection='eth0', next_hop=4)
+    assert table.as_dict() == {10: ('eth0', 4)}
+    table.add(10, connection='wifi', next_hop=9)
+    assert table.as_dict() == {10: ('wifi', 9)}
+
+
+def test_switch_table_implements_str():
+    table = SwitchTable()
+    table.add(10, connection='eth0', next_hop=4)
+    table.add(22, connection='eth1', next_hop=3)
+    assert str(table) in {'SwitchTable{10: (eth0, 4), 22: (eth1, 3)}',
+                          'SwitchTable{22: (eth1, 3), 10: (eth0, 4)}'}
+
+
+#############################################################################
+# TEST NetworkSwitch
+#############################################################################
+def test_network_switch_provides_table_read_only_property():
+    sim = Mock()
+    switch = NetworkSwitch(sim)
+    assert isinstance(switch.table, SwitchTable)
+    with pytest.raises(AttributeError):
+        # noinspection PyPropertyAccess
+        switch.table = SwitchTable()
+
+
+def test_network_switch_routes_packets_from_user_to_remote_destinations():
+    """Validate packets from source to known destination are properly served.
+
+    In this test we define a model with `NetworkService` (mock'ed),
+    `NetworkSwitch` (being tested) and two network interfaces - eth and wifi
+    (both mock'ed). `NetworkSwitch` defines two routes via these interfaces.
+
+    Then we generate a couple of packets for the destination known to the
+    switch and imitate they being received by the switch in `handle_message`.
+    We make sure that these packets are being filled with source, sender
+    and received addresses (taken from the switching table), SSNs are assigned
+    and the packets are transmitted to the proper network interfaces.
+    """
+    sim, ns, eth, wifi = Mock(), Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    eth.address = 4
+    eth_conn = Mock()
+    eth.connections.set = Mock(return_value=eth_conn)
+    wifi.address = 8
+    wifi_conn = Mock()
+    wifi.connections.set = Mock(return_value=wifi_conn)
+
+    user_conn = switch.connections.set('user', ns, reverse=False)
+    switch.connections.set('eth', eth, rname='network')
+    switch.connections.set('wifi', wifi, rname='network')
+
+    switch.table.add(10, connection='eth', next_hop=5)
+    switch.table.add(20, connection='wifi', next_hop=13)
+
+    pkt_1 = NetworkPacket(dst_addr=10)
+    pkt_2 = NetworkPacket(dst_addr=20)
+
+    switch.handle_message(pkt_1, connection=user_conn, sender=ns)
+    sim.schedule.assert_called_with(
+        0, eth.handle_message, args=(pkt_1,), kwargs={
+            'connection': eth_conn, 'sender': switch,
+        }
+    )
+    assert pkt_1.rcv_addr == 5  # = table[10].next_hop
+    assert pkt_1.snd_addr == 4  # = eth.address
+    assert pkt_1.src_addr == 4  # = eth.address
+    assert pkt_1.ssn >= 0       # any value, but not None
+
+    switch.handle_message(pkt_2, connection=user_conn, sender=ns)
+    sim.schedule.assert_called_with(
+        0, wifi.handle_message, args=(pkt_2,), kwargs={
+            'connection': wifi_conn, 'sender': switch,
+        }
+    )
+    assert pkt_2.rcv_addr == 13   # = table[20].next_hop
+    assert pkt_2.snd_addr == 8    # = wifi.address
+    assert pkt_2.src_addr == 8    # = wifi.address
+    assert pkt_2.ssn >= 0         # = any value, but not None
+
+
+def test_network_switch_increments_ssn_for_successive_packets_to_same_dest():
+    """Validate when two packets come from 'user' to same dest, SSN increments.
+    """
+    sim, ns, eth = Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    eth.address = 1
+    eth_conn = Mock()
+    eth.connections.set = Mock(return_value=eth_conn)
+
+    user_conn = switch.connections.set('user', ns, reverse=False)
+    switch.connections.set('eth', eth, rname='network')
+
+    switch.table.add(5, connection='eth', next_hop=2)
+
+    pkt_1 = NetworkPacket(dst_addr=5)
+    pkt_2 = NetworkPacket(dst_addr=5)
+
+    switch.handle_message(pkt_1, connection=user_conn, sender=ns)
+    switch.handle_message(pkt_2, connection=user_conn, sender=ns)
+
+    assert pkt_2.ssn > pkt_1.ssn
+
+
+def test_network_switch_ignores_packets_to_unknown_destinations():
+    """Validate `NetworkSwitch` ignores messages without source not from 'user'.
+    """
+    sim, ns, eth = Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    eth.address = 1
+    eth_conn = Mock()
+    eth.connections.set = Mock(return_value=eth_conn)
+
+    user_conn = switch.connections.set('invalid', ns, reverse=False)
+    switch.connections.set('eth', eth, rname='network')
+
+    switch.table.add(10, connection='eth', next_hop=2)
+
+    pkt = NetworkPacket(dst_addr=13)
+
+    switch.handle_message(pkt, connection=user_conn, sender=ns)
+    sim.schedule.assert_not_called()
+
+
+def test_network_switch_sends_packets_with_its_interface_address_to_user():
+    """Validate packet with destination matching one interface is routed up.
+
+    We send three packets: one from 'eth', one from 'wifi' and one from 'user'.
+    Make sure that in any case the packet is routed to user.
+    """
+    sim, ns, wifi, eth = Mock(), Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    ns_rev_conn = Mock()
+    ns.connections.set = Mock(return_value=ns_rev_conn)
+
+    eth.address = 1
+    wifi.address = 2
+
+    ns_conn = switch.connections.set('user', ns, rname='network')
+    eth_conn = switch.connections.set('eth', eth, rname='network')
+    wifi_conn = switch.connections.set('wifi', wifi, rname='network')
+
+    pkt_1 = NetworkPacket(dst_addr=2)
+    pkt_2 = NetworkPacket(dst_addr=2)
+    pkt_3 = NetworkPacket(dst_addr=2)
+
+    # Sending the first packet from Ethernet interface:
+    switch.handle_message(pkt_1, connection=eth_conn, sender=eth)
+    sim.schedule.assert_called_once_with(
+        0, ns.handle_message, args=(pkt_1,), kwargs={
+            'connection': ns_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+    # Sending another packet like from WiFi interface:
+    switch.handle_message(pkt_2, connection=wifi_conn, sender=wifi)
+    sim.schedule.assert_called_once_with(
+        0, ns.handle_message, args=(pkt_2,), kwargs={
+            'connection': ns_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+    # Finally, send a packet from NetworkService (loopback-like behaviour):
+    switch.handle_message(pkt_3, connection=ns_conn, sender=ns)
+    sim.schedule.assert_called_once_with(
+        0, ns.handle_message, args=(pkt_3,), kwargs={
+            'connection': ns_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+
+def test_network_switch_forwards_packets_received_from_network_interfaces():
+    """Validate packet with destination matching one interface is routed up.
+
+    We send three packets: one from 'eth', one from 'wifi' and one from 'user'.
+    Make sure that in any case the packet is routed to user.
+    """
+    sim, ns, wifi, eth = Mock(), Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    eth.address = 1
+    eth_rev_conn = Mock()
+    eth.connections.set = Mock(return_value=eth_rev_conn)
+
+    wifi.address = 20
+    wifi_rev_conn = Mock()
+    wifi.connections.set = Mock(return_value=wifi_rev_conn)
+
+    switch.connections.set('user', ns, reverse=False)
+    switch.connections.set('eth', eth, rname='network')
+    wifi_conn = switch.connections.set('wifi', wifi, rname='network')
+
+    switch.table.add(10, connection='eth', next_hop=2)
+    switch.table.add(30, connection='wifi', next_hop=23)
+
+    pkt_1 = NetworkPacket(dst_addr=10, src_addr=5, ssn=8)
+    pkt_2 = NetworkPacket(dst_addr=30, src_addr=17, ssn=4)
+
+    switch.handle_message(pkt_1, connection=wifi, sender=wifi_conn)
+    sim.schedule.assert_called_once_with(
+        0, eth.handle_message, args=(pkt_1,), kwargs={
+            'connection': eth_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+    switch.handle_message(pkt_2, connection=wifi, sender=wifi_conn)
+    sim.schedule.assert_called_once_with(
+        0, wifi.handle_message, args=(pkt_2,), kwargs={
+            'connection': wifi_rev_conn, 'sender': switch,
+        }
+    )
+
+
+def test_network_switch_ignores_old_messages():
+    """Validate `NetworkSwitch` ignores messages with old SSN.
+    """
+    sim, ns, iface = Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    iface.address = 1
+    iface_rev_conn = Mock()
+    iface.connections.set = Mock(return_value=iface_rev_conn)
+
+    ns_rev_conn = Mock()
+    ns.connections.set = Mock(return_value=ns_rev_conn)
+
+    switch.connections.set('user', ns, rname='network')
+    iface_conn = switch.connections.set('iface', iface, rname='network')
+
+    switch.table.add(10, connection='iface', next_hop=2)
+
+    pkt_1 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)
+    pkt_2 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)  # the same SSN
+    pkt_3 = NetworkPacket(dst_addr=1, src_addr=13, ssn=5)   # older SSN, to sink
+    pkt_4 = NetworkPacket(dst_addr=1, src_addr=13, ssn=9)   # New one!
+    pkt_5 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)  # again old one
+
+    switch.handle_message(pkt_1, connection=iface_conn, sender=iface)
+    sim.schedule.assert_called_once_with(
+        0, iface.handle_message, args=(pkt_1,), kwargs={
+            'connection': iface_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+    switch.handle_message(pkt_2, connection=iface_conn, sender=iface)
+    sim.schedule.assert_not_called()
+
+    switch.handle_message(pkt_3, connection=iface_conn, sender=iface)
+    sim.schedule.assert_not_called()
+
+    switch.handle_message(pkt_4, connection=iface_conn, sender=iface)
+    sim.schedule.assert_called_once_with(
+        0, ns.handle_message, args=(pkt_4,), kwargs={
+            'connection': ns_rev_conn, 'sender': switch,
+        }
+    )
+    sim.schedule.reset_mock()
+
+    switch.handle_message(pkt_5, connection=iface_conn, sender=iface)
+    sim.schedule.assert_not_called()
+
+
+def test_network_switch_updates_addresses_when_forwarding_packet():
+    """Validate sender and receiver addresses are upon forwarding.
+    """
+    sim, ns, wifi, eth = Mock(), Mock(), Mock(), Mock()
+    switch = NetworkSwitch(sim)
+
+    eth.address = 7
+    wifi.address = 199
+    wifi_rev_conn = Mock()
+    wifi.connections.set = Mock(return_value=wifi_rev_conn)
+
+    switch.connections.set('user', ns, reverse=False)
+    switch.connections.set('wifi', wifi, rname='network')
+    eth_conn = switch.connections.set('eth', eth, reverse=False)
+
+    switch.table.add(230, 'wifi', 205)
+
+    pkt = NetworkPacket(dst_addr=230, src_addr=5, snd_addr=6, rcv_addr=7, ssn=8)
+
+    switch.handle_message(pkt, connection=eth_conn, sender=eth)
+    sim.schedule.assert_called_once_with(
+        0, wifi.handle_message, args=(pkt,), kwargs={
+            'connection': wifi_rev_conn, 'sender': switch,
+        }
+    )
+
+    # These fields are expected to be updated
+    assert pkt.snd_addr == 199
+    assert pkt.rcv_addr == 205
+
+    # These fields should be kept:
+    assert pkt.ssn == 8
+    assert pkt.src_addr == 5
+    assert pkt.dst_addr == 230
