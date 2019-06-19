@@ -2,8 +2,25 @@ from pydesim import Model
 
 
 class NetworkPacket:
-    def __init__(self, dst_addr, src_addr, rcv_addr, snd_addr, data):
-        pass
+    def __init__(self, dst_addr=None, src_addr=None, rcv_addr=None,
+                 snd_addr=None, ssn=None, data=None):
+        self.dst_addr = dst_addr
+        self.src_addr = src_addr
+        self.snd_addr = snd_addr
+        self.rcv_addr = rcv_addr
+        self.ssn = ssn
+        self.data = data
+
+    def __str__(self):
+        fields = []
+        for field, value in [('DST', self.dst_addr), ('SRC', self.src_addr),
+                             ('SND', self.snd_addr), ('RCV', self.rcv_addr),
+                             ('SSN', self.ssn)]:
+            if value is not None:
+                fields.append(f'{field}={value}')
+        header = ','.join(fields)
+        body = f' | {self.data}' if self.data is not None else ''
+        return f'NetPkt{{{header}{body}}}'
 
 
 class NetworkService(Model):

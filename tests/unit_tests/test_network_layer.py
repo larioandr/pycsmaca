@@ -1,10 +1,9 @@
-from collections import namedtuple
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 from pydesim import Model
 
-from pycsmaca.simulations.modules.network_layer import NetworkService
-
+from pycsmaca.simulations.modules.network_layer import NetworkService, \
+    NetworkPacket
 
 NET_PACKET_CLASS = 'pycsmaca.simulations.modules.network_layer.NetworkPacket'
 
@@ -123,3 +122,30 @@ def test_str_uses_parent_if_specified():
 
     assert str(ns1) == "NetworkService"
     assert str(ns2) == "DummyParent.NetworkService"
+
+
+#############################################################################
+# TEST NetworkPacket
+#############################################################################
+def test_network_packet_creation():
+    data = Mock()
+    packet = NetworkPacket(dst_addr=10, src_addr=2, snd_addr=5, rcv_addr=6,
+                           ssn=32, data=data)
+    assert packet.dst_addr == 10
+    assert packet.src_addr == 2
+    assert packet.snd_addr == 5
+    assert packet.rcv_addr == 6
+    assert packet.ssn == 32
+    assert packet.data == data
+
+
+def test_network_packet_implements_str():
+    data = MagicMock()
+    data.__str__.return_value = 'AppData{sid=13}'
+    pkt1 = NetworkPacket(dst_addr=10, src_addr=2, snd_addr=5, rcv_addr=6,
+                         ssn=4, data=data)
+    pkt2 = NetworkPacket(dst_addr=5, data=data)
+    pkt3 = NetworkPacket(dst_addr=8)
+    assert str(pkt1) == f'NetPkt{{DST=10,SRC=2,SND=5,RCV=6,SSN=4 | {data}}}'
+    assert str(pkt2) == f'NetPkt{{DST=5 | {data}}}'
+    assert str(pkt3) == f'NetPkt{{DST=8}}'
