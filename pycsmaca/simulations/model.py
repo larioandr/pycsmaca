@@ -4,7 +4,7 @@ from enum import Enum
 
 import numpy as np
 
-from pydesim import Model, simulate, Logger, Statistic, Trace, Intervals
+from pydesim import Model, Statistic, Trace, Intervals
 
 
 class PacketType(Enum):

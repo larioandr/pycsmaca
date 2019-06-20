@@ -83,7 +83,7 @@ def test_push_to_full_queue_without_service_drops_last_packet():
     assert len(queue) == 1
     assert queue.size() == 1
     assert queue.bitsize() == data_size[0]
-    assert queue.as_tuple() == tuple(packets)
+    assert queue.as_tuple() == (packets[0],)
 
 
 def test_pop_from_empty_queue_raises_error():
@@ -118,7 +118,7 @@ def test_pop_extracts_packets_in_correct_order():
     assert not queue.full()
     assert len(queue) == 0
     assert queue.size() == 0
-    assert queue.bitsize() == ()
+    assert queue.bitsize() == 0
     assert queue.as_tuple() == ()
 
 
@@ -155,7 +155,7 @@ def test_finite_queue_without_service_writes_statistics():
 
 
 def test_infinite_queue_stores_many_enough_packets():
-    n = 10000
+    n = 50
     packets = [
         NetworkPacket(data=AppData(0, uniform(0, 1000), 0, 0)) for _ in range(n)
     ]
@@ -170,7 +170,7 @@ def test_infinite_queue_stores_many_enough_packets():
         sim.stime = t
         queue.push(pkt)
 
-    assert queue.length() == n
+    assert queue.size() == n
     assert len(queue.size_trace) == n + 1
     assert queue.num_dropped == 0
 
@@ -231,7 +231,7 @@ def test_queue_with_service_passes_single_stored_packet_after_get_next_call():
     # Check that after `get_next()` request the message is passed:
     sim.stime = t3
     queue.get_next(service=service)
-    assert queue.as_tuple() == (packets[1])
+    assert queue.as_tuple() == (packets[1],)
     sim.schedule.assert_called_once_with(
         0, service.handle_message, args=(packets[0],), kwargs={
             'connection': service_rev_conn, 'sender': queue,
@@ -251,3 +251,82 @@ def test_queue_with_service_passes_single_stored_packet_after_get_next_call():
         (t4, size[1] + size[2]),
     )
     assert queue.num_dropped == 0
+
+
+def test_queue_with_several_services_finds_right_connections():
+    sim, blue, red, green = Mock(), Mock(), Mock(), Mock()
+    sim.stime = 0
+
+    blue_rev_conn = Mock()
+    blue.connections.set = Mock(return_value=blue_rev_conn)
+    red_rev_conn = Mock()
+    red.connections.set = Mock(return_value=red_rev_conn)
+    green_rev_conn = Mock()
+    green.connections.set = Mock(return_value=green_rev_conn)
+
+    queue = Queue(sim=sim)
+    queue.connections.set('blue', blue, rname='queue')
+    queue.connections.set('red', red, rname='queue')
+    queue.connections.set('green', green, rname='queue')
+
+    # First, we fill the queue:
+    pkt_1 = NetworkPacket(data=AppData(size=100))
+    pkt_2 = NetworkPacket(data=AppData(size=200))
+    pkt_3 = NetworkPacket(data=AppData(size=300))
+
+    # Now, while queue is empty, two services request data:
+    sim.stime = 0.5
+    queue.get_next(green)
+    sim.stime = 1.0
+    queue.get_next(blue)
+
+    # At some moment, a packet arrives. It should be passed to the module that
+    # first requested the packet:
+    sim.stime = 2
+    queue.push(pkt_1)
+    sim.schedule.assert_called_once_with(
+        0, green.handle_message, args=(pkt_1,), kwargs={
+            'connection': green_rev_conn, 'sender': queue,
+        }
+    )
+    assert queue.as_tuple() == ()
+    sim.schedule.reset_mock()
+
+    # At the next moment, another packet arrives and is being passed to the
+    # module that requested data after the first one:
+    sim.stime = 5
+    queue.push(pkt_2)
+    sim.schedule.assert_called_once_with(
+        0, blue.handle_message, args=(pkt_2,), kwargs={
+            'connection': blue_rev_conn, 'sender': queue,
+        }
+    )
+    assert queue.as_tuple() == ()
+    sim.schedule.reset_mock()
+
+    # Now another packet arrives, and it should be stored since both requests
+    # were fulfilled previously:
+    sim.stime = 10
+    queue.push(pkt_3)
+    assert queue.as_tuple() == (pkt_3,)
+    sim.schedule.assert_not_called()
+
+    # Finally, the another module requests a packet, and it is immediately
+    # delivered to it:
+    sim.stime = 19
+    queue.get_next(red)
+    sim.schedule.assert_called_once_with(
+        0, red.handle_message, args=(pkt_3,), kwargs={
+            'connection': red_rev_conn, 'sender': queue,
+        }
+    )
+
+
+def test_data_request_to_queue_from_module_not_connected_raises_error():
+    sim, service = Mock(), Mock()
+    sim.stime = 0
+
+    queue = Queue(sim=sim)
+
+    with pytest.raises(ValueError):
+        queue.get_next(service=service)
