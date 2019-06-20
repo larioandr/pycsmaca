@@ -36,12 +36,10 @@ def test_network_service_accepts_packets_from_app():
 
     # Now we simulate packet arrival from APP:
     app_data = Mock()
-    app_data.dst_addr = 13
+    app_data.destination_address = 13
+
     with patch(NET_PACKET_CLASS) as NetworkPacketMock:
-        pkt_spec = dict(
-            src_addr=None, dst_addr=13, rcv_addr=None, snd_addr=None,
-            data=app_data
-        )
+        pkt_spec = dict(destination_address=13, data=app_data)
         packet_instance_mock = Mock()
         NetworkPacketMock.return_value = packet_instance_mock
 
@@ -59,6 +57,37 @@ def test_network_service_accepts_packets_from_app():
         )
 
 
+def test_network_service_fills_data_and_dst_addr_for_packet_from_app():
+    sim, app, net = Mock(), Mock(), Mock()
+    ns = NetworkService(sim)
+
+    # noinspection PyUnusedLocal
+    def schedule_mock(delay, method, args, kwargs):
+        packet = args[0]
+        connection, sender = kwargs['connection'], kwargs['sender']
+        assert isinstance(packet, NetworkPacket)
+        assert connection == net_rev_conn
+        assert sender == ns
+        assert packet.destination_address == 13
+        assert packet.originator_address is None
+        assert packet.sender_address is None
+        assert packet.receiver_address is None
+
+    net_rev_conn = Mock()
+    net.connections.set = Mock(return_value=net_rev_conn)
+
+    ns.connections.set('network', net, rname='user')
+    app_conn = ns.connections.set('source', app, reverse=False)
+
+    # Now we simulate packet arrival from APP:
+    app_data = Mock()
+    app_data.destination_address = 13
+
+    sim.schedule = Mock(side_effect=schedule_mock)
+    ns.handle_message(app_data, connection=app_conn, sender=app)
+    sim.schedule.assert_called_once()
+
+
 def test_network_service_ignores_app_data_via_other_connections():
     sim, app = Mock(), Mock()
     ns = NetworkService(sim)
@@ -66,7 +95,7 @@ def test_network_service_ignores_app_data_via_other_connections():
 
     # Now we simulate packet arrival from APP via unsupported connection:
     app_data = Mock()
-    app_data.dst_addr = 1
+    app_data.destination_address = 1
     with patch(NET_PACKET_CLASS) as NetworkPacketMock:
         # Imitate packet AppData arrival via wrong connections and make
         # sure it doesn't cause NetworkPacket instantiation:
@@ -130,24 +159,26 @@ def test_str_uses_parent_if_specified():
 #############################################################################
 def test_network_packet_creation():
     data = Mock()
-    packet = NetworkPacket(dst_addr=10, src_addr=2, snd_addr=5, rcv_addr=6,
-                           ssn=32, data=data)
-    assert packet.dst_addr == 10
-    assert packet.src_addr == 2
-    assert packet.snd_addr == 5
-    assert packet.rcv_addr == 6
-    assert packet.ssn == 32
+    packet = NetworkPacket(
+        destination_address=10, originator_address=2, sender_address=5,
+        receiver_address=6, osn=32, data=data)
+    assert packet.destination_address == 10
+    assert packet.originator_address == 2
+    assert packet.sender_address == 5
+    assert packet.receiver_address == 6
+    assert packet.osn == 32
     assert packet.data == data
 
 
 def test_network_packet_implements_str():
     data = MagicMock()
     data.__str__.return_value = 'AppData{sid=13}'
-    pkt1 = NetworkPacket(dst_addr=10, src_addr=2, snd_addr=5, rcv_addr=6,
-                         ssn=4, data=data)
-    pkt2 = NetworkPacket(dst_addr=5, data=data)
-    pkt3 = NetworkPacket(dst_addr=8)
-    assert str(pkt1) == f'NetPkt{{DST=10,SRC=2,SND=5,RCV=6,SSN=4 | {data}}}'
+    pkt1 = NetworkPacket(
+        destination_address=10, originator_address=2, sender_address=5,
+        receiver_address=6, osn=4, data=data)
+    pkt2 = NetworkPacket(destination_address=5, data=data)
+    pkt3 = NetworkPacket(destination_address=8)
+    assert str(pkt1) == f'NetPkt{{DST=10,ORIGIN=2,SND=5,RCV=6,OSN=4 | {data}}}'
     assert str(pkt2) == f'NetPkt{{DST=5 | {data}}}'
     assert str(pkt3) == f'NetPkt{{DST=8}}'
 
@@ -265,8 +296,8 @@ def test_network_switch_routes_packets_from_user_to_remote_destinations():
     switch.table.add(10, connection='eth', next_hop=5)
     switch.table.add(20, connection='wifi', next_hop=13)
 
-    pkt_1 = NetworkPacket(dst_addr=10)
-    pkt_2 = NetworkPacket(dst_addr=20)
+    pkt_1 = NetworkPacket(destination_address=10)
+    pkt_2 = NetworkPacket(destination_address=20)
 
     switch.handle_message(pkt_1, connection=user_conn, sender=ns)
     sim.schedule.assert_called_with(
@@ -274,10 +305,10 @@ def test_network_switch_routes_packets_from_user_to_remote_destinations():
             'connection': eth_conn, 'sender': switch,
         }
     )
-    assert pkt_1.rcv_addr == 5  # = table[10].next_hop
-    assert pkt_1.snd_addr == 4  # = eth.address
-    assert pkt_1.src_addr == 4  # = eth.address
-    assert pkt_1.ssn >= 0       # any value, but not None
+    assert pkt_1.receiver_address == 5  # = table[10].next_hop
+    assert pkt_1.sender_address == 4  # = eth.address
+    assert pkt_1.originator_address == 4  # = eth.address
+    assert pkt_1.osn >= 0       # any value, but not None
 
     switch.handle_message(pkt_2, connection=user_conn, sender=ns)
     sim.schedule.assert_called_with(
@@ -285,13 +316,13 @@ def test_network_switch_routes_packets_from_user_to_remote_destinations():
             'connection': wifi_conn, 'sender': switch,
         }
     )
-    assert pkt_2.rcv_addr == 13   # = table[20].next_hop
-    assert pkt_2.snd_addr == 8    # = wifi.address
-    assert pkt_2.src_addr == 8    # = wifi.address
-    assert pkt_2.ssn >= 0         # = any value, but not None
+    assert pkt_2.receiver_address == 13   # = table[20].next_hop
+    assert pkt_2.sender_address == 8    # = wifi.address
+    assert pkt_2.originator_address == 8    # = wifi.address
+    assert pkt_2.osn >= 0         # = any value, but not None
 
 
-def test_network_switch_increments_ssn_for_successive_packets_to_same_dest():
+def test_network_switch_increments_ssn_for_successive_packets_from_same_src():
     """Validate when two packets come from 'user' to same dest, SSN increments.
     """
     sim, ns, eth = Mock(), Mock(), Mock()
@@ -305,14 +336,15 @@ def test_network_switch_increments_ssn_for_successive_packets_to_same_dest():
     switch.connections.set('eth', eth, rname='network')
 
     switch.table.add(5, connection='eth', next_hop=2)
+    switch.table.add(10, connection='eth', next_hop=3)
 
-    pkt_1 = NetworkPacket(dst_addr=5)
-    pkt_2 = NetworkPacket(dst_addr=5)
+    pkt_1 = NetworkPacket(destination_address=5)
+    pkt_2 = NetworkPacket(destination_address=10)
 
     switch.handle_message(pkt_1, connection=user_conn, sender=ns)
     switch.handle_message(pkt_2, connection=user_conn, sender=ns)
 
-    assert pkt_2.ssn > pkt_1.ssn
+    assert pkt_2.osn > pkt_1.osn
 
 
 def test_network_switch_ignores_packets_to_unknown_destinations():
@@ -330,7 +362,7 @@ def test_network_switch_ignores_packets_to_unknown_destinations():
 
     switch.table.add(10, connection='eth', next_hop=2)
 
-    pkt = NetworkPacket(dst_addr=13)
+    pkt = NetworkPacket(destination_address=13)
 
     switch.handle_message(pkt, connection=user_conn, sender=ns)
     sim.schedule.assert_not_called()
@@ -355,9 +387,9 @@ def test_network_switch_sends_packets_with_its_interface_address_to_user():
     eth_conn = switch.connections.set('eth', eth, rname='network')
     wifi_conn = switch.connections.set('wifi', wifi, rname='network')
 
-    pkt_1 = NetworkPacket(dst_addr=2)
-    pkt_2 = NetworkPacket(dst_addr=2)
-    pkt_3 = NetworkPacket(dst_addr=2)
+    pkt_1 = NetworkPacket(destination_address=2)
+    pkt_2 = NetworkPacket(destination_address=2)
+    pkt_3 = NetworkPacket(destination_address=2)
 
     # Sending the first packet from Ethernet interface:
     switch.handle_message(pkt_1, connection=eth_conn, sender=eth)
@@ -411,8 +443,8 @@ def test_network_switch_forwards_packets_received_from_network_interfaces():
     switch.table.add(10, connection='eth', next_hop=2)
     switch.table.add(30, connection='wifi', next_hop=23)
 
-    pkt_1 = NetworkPacket(dst_addr=10, src_addr=5, ssn=8)
-    pkt_2 = NetworkPacket(dst_addr=30, src_addr=17, ssn=4)
+    pkt_1 = NetworkPacket(destination_address=10, originator_address=5, osn=8)
+    pkt_2 = NetworkPacket(destination_address=30, originator_address=17, osn=4)
 
     switch.handle_message(pkt_1, connection=wifi, sender=wifi_conn)
     sim.schedule.assert_called_once_with(
@@ -448,11 +480,11 @@ def test_network_switch_ignores_old_messages():
 
     switch.table.add(10, connection='iface', next_hop=2)
 
-    pkt_1 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)
-    pkt_2 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)  # the same SSN
-    pkt_3 = NetworkPacket(dst_addr=1, src_addr=13, ssn=5)   # older SSN, to sink
-    pkt_4 = NetworkPacket(dst_addr=1, src_addr=13, ssn=9)   # New one!
-    pkt_5 = NetworkPacket(dst_addr=10, src_addr=13, ssn=8)  # again old one
+    pkt_1 = NetworkPacket(destination_address=10, originator_address=13, osn=8)
+    pkt_2 = NetworkPacket(destination_address=10, originator_address=13, osn=8)  # the same SSN
+    pkt_3 = NetworkPacket(destination_address=1, originator_address=13, osn=5)   # older SSN, to sink
+    pkt_4 = NetworkPacket(destination_address=1, originator_address=13, osn=9)   # New one!
+    pkt_5 = NetworkPacket(destination_address=10, originator_address=13, osn=8)  # again old one
 
     switch.handle_message(pkt_1, connection=iface_conn, sender=iface)
     sim.schedule.assert_called_once_with(
@@ -497,7 +529,7 @@ def test_network_switch_updates_addresses_when_forwarding_packet():
 
     switch.table.add(230, 'wifi', 205)
 
-    pkt = NetworkPacket(dst_addr=230, src_addr=5, snd_addr=6, rcv_addr=7, ssn=8)
+    pkt = NetworkPacket(destination_address=230, originator_address=5, sender_address=6, receiver_address=7, osn=8)
 
     switch.handle_message(pkt, connection=eth_conn, sender=eth)
     sim.schedule.assert_called_once_with(
@@ -507,10 +539,10 @@ def test_network_switch_updates_addresses_when_forwarding_packet():
     )
 
     # These fields are expected to be updated
-    assert pkt.snd_addr == 199
-    assert pkt.rcv_addr == 205
+    assert pkt.sender_address == 199
+    assert pkt.receiver_address == 205
 
     # These fields should be kept:
-    assert pkt.ssn == 8
-    assert pkt.src_addr == 5
-    assert pkt.dst_addr == 230
+    assert pkt.osn == 8
+    assert pkt.originator_address == 5
+    assert pkt.destination_address == 230

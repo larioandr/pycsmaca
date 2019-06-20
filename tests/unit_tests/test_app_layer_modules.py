@@ -182,18 +182,26 @@ def test_random_source_provides_intervals_and_sizes_statistics():
 # noinspection PyPropertyAccess
 def test_app_data_is_immutable():
     app_data = AppData(dest_addr=5, size=20, source_id=13, created_at=123)
-    assert app_data.dest_addr == 5
+    assert app_data.destination_address == 5
     assert app_data.size == 20
     assert app_data.source_id == 13
     assert app_data.created_at == 123
     with pytest.raises(AttributeError):
-        app_data.dest_addr = 11
+        app_data.destination_address = 11
     with pytest.raises(AttributeError):
         app_data.size = 21
     with pytest.raises(AttributeError):
         app_data.source_id = 26
     with pytest.raises(AttributeError):
         app_data.created_at = 234
+
+
+def test_app_data_supports_default_values():
+    app_data = AppData()
+    assert app_data.destination_address == 0
+    assert app_data.size == 0
+    assert app_data.source_id == 0
+    assert app_data.created_at == 0
 
 
 def test_app_data_provides_str():

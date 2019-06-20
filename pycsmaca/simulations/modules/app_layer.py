@@ -4,14 +4,14 @@ from pycsmaca.utilities import ReadOnlyDict
 
 
 class AppData:
-    def __init__(self, dest_addr, size, source_id, created_at):
+    def __init__(self, dest_addr=0, size=0, source_id=0, created_at=0):
         self.__dest_addr = dest_addr
         self.__size = size
         self.__source_id = source_id
         self.__created_at = created_at
 
     @property
-    def dest_addr(self):
+    def destination_address(self):
         return self.__dest_addr
 
     @property
@@ -28,7 +28,7 @@ class AppData:
 
     def __str__(self):
         fields = ','.join([
-            f'sid={self.source_id}', f'dst={self.dest_addr}',
+            f'sid={self.source_id}', f'dst={self.destination_address}',
             f'size={self.size}', f'ct={self.created_at}'
         ])
         return f'AppData{{{fields}}}'
