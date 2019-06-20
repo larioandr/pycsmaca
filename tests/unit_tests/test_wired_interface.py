@@ -1,12 +1,11 @@
 from unittest.mock import Mock, patch, ANY
 
 import pytest
-from numpy import inf
 
 from pycsmaca.simulations.modules.app_layer import AppData
 from pycsmaca.simulations.modules.network_layer import NetworkPacket
 from pycsmaca.simulations.modules.wired_interface import (
-    WiredInterface, WireFrame
+    WiredTransceiver, WireFrame
 )
 
 
@@ -45,7 +44,7 @@ def test_wire_frame_implements_str():
 
 
 #############################################################################
-# TEST WiredInterface MODEL
+# TEST WiredTransceiver MODEL
 #############################################################################
 
 # noinspection PyPropertyAccess
@@ -53,27 +52,27 @@ def test_wire_frame_implements_str():
         (1, 100, 10, 0.2, 0.05),
         (8, 512, 22, 0.08, 0.1),
 ))
-def test_wired_interface_properties(
+def test_wired_transceiver_properties(
         address, bitrate, header_size, preamble, ifs
 ):
     sim = Mock()
-    iface = WiredInterface(
+    iface = WiredTransceiver(
         sim, address=address, bitrate=bitrate, header_size=header_size,
         preamble=preamble, ifs=ifs,
     )
 
-    # Check that interface has a read-only address:
+    # Check that transceiver has a read-only address:
     assert iface.address == address
     with pytest.raises(AttributeError):
         iface.address = 13
 
-    # Check that interface has bitrate, header size, preamble and ifs attrs:
+    # Check that transceiver has bitrate, header size, preamble and ifs attrs:
     assert iface.bitrate == bitrate
     assert iface.header_size == header_size
     assert iface.preamble == preamble
     assert iface.ifs == ifs
 
-    # We also check that interface is in ready state, but not started:
+    # We also check that transceiver is in ready state, but not started:
     assert not iface.started
     assert iface.tx_ready
     assert not iface.tx_busy
@@ -97,16 +96,16 @@ def test_wired_interface_properties(
         (1, 100, 10, 0.2, 0.05),
         (8, 512, 22, 0.08, 0.1),
 ))
-def test_wired_interface_packet_from_queue_transmission(
+def test_wired_transceiver_packet_from_queue_transmission(
         address, bitrate, header_size, preamble, ifs
 ):
     sim = Mock()
-    iface = WiredInterface(
+    iface = WiredTransceiver(
         sim, address=address, bitrate=bitrate, header_size=header_size,
         preamble=preamble, ifs=ifs,
     )
 
-    # Now we connect the interface with a queue and start it. Make sure
+    # Now we connect the transceiver with a queue and start it. Make sure
     # that the queue is connected via 'queue' link, and after start `get_next()`
     # is called.
     queue = Mock()
@@ -116,15 +115,15 @@ def test_wired_interface_packet_from_queue_transmission(
     queue_conn = iface.connections.set('queue', queue, rname='iface')
     queue.get_next.assert_not_called()
 
-    iface.start()  # start of the interface causes `get_next()` call
+    iface.start()  # start of the transceiver causes `get_next()` call
 
     queue.get_next.assert_called_once_with(iface)
     queue.get_next.reset_mock()
     assert iface.started and iface.tx_ready and not iface.tx_busy
 
     #
-    # After being started, interface expects a `NetworkPacket` in its
-    # handle_message() call. We connect another mock to the interface via
+    # After being started, transceiver expects a `NetworkPacket` in its
+    # handle_message() call. We connect another mock to the transceiver via
     # 'peer' connection and make sure that after the call that `send()` was
     # called on that peer connection.
     #
@@ -158,21 +157,21 @@ def test_wired_interface_packet_from_queue_transmission(
         )
         WireFrameMock.assert_called_once_with(**frame_kwargs)
 
-        # Also check that wired interface scheduled a timeout:
+        # Also check that wired transceiver scheduled a timeout:
         sim.schedule.assert_any_call(duration, iface.handle_tx_end)
 
-        # .. and that now interface is busy:
+        # .. and that now transceiver is busy:
         assert iface.started and not iface.tx_ready and iface.tx_busy
         sim.schedule.reset_mock()
 
     # Now we imitate `handle_tx_end()` call, make sure that after that the
-    # interface is not yet ready, but schedules `handle_ifs_end()`:
+    # transceiver is not yet ready, but schedules `handle_ifs_end()`:
     sim.stime = duration
     iface.handle_tx_end()
     sim.schedule.assert_called_once_with(ifs, iface.handle_ifs_end)
     assert iface.started and not iface.tx_ready and iface.tx_busy
 
-    # After the IFS waiting finished, interface is expected to call
+    # After the IFS waiting finished, transceiver is expected to call
     # `queue.get_next(iface)` and be ready for new packets:
     sim.stime += ifs
     iface.handle_ifs_end()
@@ -180,9 +179,9 @@ def test_wired_interface_packet_from_queue_transmission(
     assert iface.started and iface.tx_ready and not iface.tx_busy
 
 
-def test_wired_interface_raises_error_if_requested_tx_during_another_tx():
+def test_wired_transceiver_raises_error_if_requested_tx_during_another_tx():
     sim, peer, queue = Mock(), Mock(), Mock()
-    iface = WiredInterface(sim, address=0, bitrate=100)
+    iface = WiredTransceiver(sim, address=0, bitrate=100)
     queue_conn = iface.connections.set('queue', queue, rname='iface')
     iface.connections.set('peer', peer, rname='peer')
 
@@ -196,10 +195,10 @@ def test_wired_interface_raises_error_if_requested_tx_during_another_tx():
         iface.handle_message(pkt_2, sender=queue, connection=queue_conn)
 
 
-def test_wired_interface_sends_data_up_when_rx_completed():
+def test_wired_transceiver_sends_data_up_when_rx_completed():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
-    iface = WiredInterface(sim, address=0)
+    iface = WiredTransceiver(sim, address=0)
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
@@ -232,12 +231,12 @@ def test_wired_interface_sends_data_up_when_rx_completed():
         (1000, 10, 0.2, 1540),
         (2000, 12, 0.3, 800),
 ))
-def test_wired_interface_is_full_duplex(bitrate, header_size, preamble, size):
+def test_wired_transceiver_is_full_duplex(bitrate, header_size, preamble, size):
     sim, peer, queue, switch = Mock(), Mock(), Mock(), Mock()
     sim.stime = 0
 
-    eth = WiredInterface(sim, address=0, header_size=header_size,
-                         bitrate=bitrate, preamble=preamble, ifs=0)
+    eth = WiredTransceiver(sim, address=0, header_size=header_size,
+                           bitrate=bitrate, preamble=preamble, ifs=0)
 
     peer_conn = eth.connections.set('peer', peer, reverse=False)
     queue_conn = eth.connections.set('queue', queue, reverse=False)
@@ -250,7 +249,7 @@ def test_wired_interface_is_full_duplex(bitrate, header_size, preamble, size):
     frame = WireFrame(inp_pkt, duration=duration, header_size=header_size,
                       preamble=preamble)
 
-    # 1) Interface starts transmitting `out_pkt_1`:
+    # 1) Transceiver starts transmitting `out_pkt_1`:
     sim.stime = 0
     eth.start()
     eth.handle_message(out_pkt_1, queue_conn, queue)
@@ -294,10 +293,10 @@ def test_wired_interface_is_full_duplex(bitrate, header_size, preamble, size):
                                     kwargs=ANY)
 
 
-def test_wired_interface_ignores_frames_not_from_peer():
+def test_wired_transceiver_ignores_frames_not_from_peer():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
-    iface = WiredInterface(sim, address=0)
+    iface = WiredTransceiver(sim, address=0)
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)

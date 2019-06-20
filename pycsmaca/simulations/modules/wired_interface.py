@@ -18,7 +18,7 @@ class WireFrame:
         return f'WireFrame[{fields}{body}]'
 
 
-class WiredInterface(Model):
+class WiredTransceiver(Model):
     def __init__(
             self, sim, address, bitrate=inf, header_size=0, preamble=0, ifs=0):
         super().__init__(sim)
