@@ -330,3 +330,16 @@ def test_data_request_to_queue_from_module_not_connected_raises_error():
 
     with pytest.raises(ValueError):
         queue.get_next(service=service)
+
+
+def test_queue_accepts_packets_on_handle_message_call():
+    sim, producer = Mock(), Mock()
+    sim.stime = 0
+
+    queue = Queue(sim=sim)
+    conn = queue.connections.set('input', producer, reverse=False)
+
+    pkt = NetworkPacket(data=AppData(size=123))
+
+    queue.handle_message(pkt, sender=producer, connection=conn)
+    assert queue.as_tuple() == (pkt,)

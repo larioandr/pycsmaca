@@ -4,6 +4,48 @@ from pydesim import Model, Trace
 
 
 class Queue(Model):
+    """`Queue` model stores packets and forwards them to services by requests.
+
+    `Queue` module may have finite or infinite capacity, which is specified
+    during the `Queue` instance creation. If the capacity is finite, then
+    packets pushed when the queue is full will be dropped. In other case,
+    the queue will store all the packets being received.
+
+    `Queue` can support multiple services (e.g., network interfaces). It
+    delivers packets when a service calls `get_next(service)` method on
+    the queue.
+
+    > IMPORTANT: to use a queue, service MUST be connected using
+    bi-directional connection.
+
+    If multiple services request packets, they are delivered in the order of
+    `get_next()` was called. Each call leads to a single packet being
+    transmitted.
+
+    The packet is transmitted to the service immediately after `get_next()`
+    call, if the queue is not empty. If the queue is empty, it stores a request
+    and send a packet right after a new packet arrives. In the latter case,
+    queue size is not updated, and it is counted as the packet went directly
+    to the service.
+
+    Packets are sent to the services via `connection.send()` call, and this
+    is the reason why the service is meant to be connected to the queue.
+
+    `Queue` accepts packets via its `handle_message()` call.
+
+    Connections:
+
+    - any service that is going to use a queue as a data source MUST be
+        connected (these connections can have any names);
+
+    - data producers should also be connected to use `connection.send()` call
+        that causes `handle_message(packet)` being called (these connections
+        can also have any names).
+
+    > NOTE: queue can also be accessed with `push()` and `pop()` methods,
+    so in some cases producers and services may use this module directly,
+    without connections (and without `get_next()` also in this case).
+    """
     def __init__(self, sim, capacity=None):
         super().__init__(sim)
         self.__capacity = capacity
@@ -78,6 +120,9 @@ class Queue(Model):
             connection.send(self.pop())
         else:
             self.__data_requests.append(connection)
+
+    def handle_message(self, message, connection=None, sender=None):
+        self.push(message)
 
     def _get_connection_to(self, module):
         for conn_name, peer in self.connections.as_dict().items():
