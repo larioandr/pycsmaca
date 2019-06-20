@@ -48,23 +48,16 @@ def test_wire_frame_implements_str():
 #############################################################################
 
 # noinspection PyPropertyAccess
-@pytest.mark.parametrize('address, bitrate, header_size, preamble, ifs', (
-        (1, 100, 10, 0.2, 0.05),
-        (8, 512, 22, 0.08, 0.1),
+@pytest.mark.parametrize('bitrate, header_size, preamble, ifs', (
+        (100, 10, 0.2, 0.05),
+        (512, 22, 0.08, 0.1),
 ))
-def test_wired_transceiver_properties(
-        address, bitrate, header_size, preamble, ifs
-):
+def test_wired_transceiver_properties(bitrate, header_size, preamble, ifs):
     sim = Mock()
     iface = WiredTransceiver(
-        sim, address=address, bitrate=bitrate, header_size=header_size,
-        preamble=preamble, ifs=ifs,
+        sim, bitrate=bitrate, header_size=header_size, preamble=preamble,
+        ifs=ifs,
     )
-
-    # Check that transceiver has a read-only address:
-    assert iface.address == address
-    with pytest.raises(AttributeError):
-        iface.address = 13
 
     # Check that transceiver has bitrate, header size, preamble and ifs attrs:
     assert iface.bitrate == bitrate
@@ -92,17 +85,16 @@ def test_wired_transceiver_properties(
         iface.rx_busy = False
 
 
-@pytest.mark.parametrize('address, bitrate, header_size, preamble, ifs', (
-        (1, 100, 10, 0.2, 0.05),
-        (8, 512, 22, 0.08, 0.1),
+@pytest.mark.parametrize('bitrate, header_size, preamble, ifs', (
+        (100, 10, 0.2, 0.05),
+        (512, 22, 0.08, 0.1),
 ))
 def test_wired_transceiver_packet_from_queue_transmission(
-        address, bitrate, header_size, preamble, ifs
-):
+        bitrate, header_size, preamble, ifs):
     sim = Mock()
     iface = WiredTransceiver(
-        sim, address=address, bitrate=bitrate, header_size=header_size,
-        preamble=preamble, ifs=ifs,
+        sim, bitrate=bitrate, header_size=header_size, preamble=preamble,
+        ifs=ifs,
     )
 
     # Now we connect the transceiver with a queue and start it. Make sure
@@ -181,7 +173,7 @@ def test_wired_transceiver_packet_from_queue_transmission(
 
 def test_wired_transceiver_raises_error_if_requested_tx_during_another_tx():
     sim, peer, queue = Mock(), Mock(), Mock()
-    iface = WiredTransceiver(sim, address=0, bitrate=100)
+    iface = WiredTransceiver(sim, bitrate=100)
     queue_conn = iface.connections.set('queue', queue, rname='iface')
     iface.connections.set('peer', peer, rname='peer')
 
@@ -198,7 +190,7 @@ def test_wired_transceiver_raises_error_if_requested_tx_during_another_tx():
 def test_wired_transceiver_sends_data_up_when_rx_completed():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
-    iface = WiredTransceiver(sim, address=0)
+    iface = WiredTransceiver(sim)
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
@@ -235,8 +227,8 @@ def test_wired_transceiver_is_full_duplex(bitrate, header_size, preamble, size):
     sim, peer, queue, switch = Mock(), Mock(), Mock(), Mock()
     sim.stime = 0
 
-    eth = WiredTransceiver(sim, address=0, header_size=header_size,
-                           bitrate=bitrate, preamble=preamble, ifs=0)
+    eth = WiredTransceiver(
+        sim, header_size=header_size, bitrate=bitrate, preamble=preamble, ifs=0)
 
     peer_conn = eth.connections.set('peer', peer, reverse=False)
     queue_conn = eth.connections.set('queue', queue, reverse=False)
@@ -296,7 +288,7 @@ def test_wired_transceiver_is_full_duplex(bitrate, header_size, preamble, size):
 def test_wired_transceiver_ignores_frames_not_from_peer():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
-    iface = WiredTransceiver(sim, address=0)
+    iface = WiredTransceiver(sim)
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
@@ -307,3 +299,6 @@ def test_wired_transceiver_ignores_frames_not_from_peer():
     iface.handle_message(frame, sender=sender, connection=sender_conn)
     sim.schedule.assert_not_called()
     assert iface.rx_ready
+
+
+# def test_wired_transceiver_records_busy_trace():

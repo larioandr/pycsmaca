@@ -19,10 +19,8 @@ class WireFrame:
 
 
 class WiredTransceiver(Model):
-    def __init__(
-            self, sim, address, bitrate=inf, header_size=0, preamble=0, ifs=0):
+    def __init__(self, sim, bitrate=inf, header_size=0, preamble=0, ifs=0):
         super().__init__(sim)
-        self.__address = address
         self.bitrate = bitrate
         self.header_size = header_size
         self.preamble = preamble
@@ -32,10 +30,6 @@ class WiredTransceiver(Model):
         self.__tx_frame = None
         self.__wait_ifs = False
         self.__rx_frame = None
-
-    @property
-    def address(self):
-        return self.__address
 
     @property
     def started(self):
