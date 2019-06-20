@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch, ANY
 
 import pytest
+from numpy import inf
 
 from pycsmaca.simulations.modules.app_layer import AppData
 from pycsmaca.simulations.modules.network_layer import NetworkPacket
@@ -12,15 +13,53 @@ from pycsmaca.simulations.modules.wired_interface import (
 WIRE_FRAME_CLASS = 'pycsmaca.simulations.modules.wired_interface.WireFrame'
 
 
-@pytest.mark.parametrize('address, bitrate, header_size, preamble', (
-        (1, 100, 10, 0.2),
-        (8, 512, 22, 0.08),
+#############################################################################
+# TEST WireFrame
+#############################################################################
+def test_wire_frame_init_and_properties():
+    pkt_1 = NetworkPacket(data=AppData(100))
+    pkt_2 = NetworkPacket(data=AppData(200))
+
+    frame_1 = WireFrame(pkt_1, header_size=10, preamble=0.2, duration=1.5)
+    assert frame_1.packet == pkt_1
+    assert frame_1.duration == 1.5
+    assert frame_1.header_size == 10
+    assert frame_1.preamble == 0.2
+
+    frame_2 = WireFrame(packet=pkt_2)
+    assert frame_2.packet == pkt_2
+    assert frame_2.duration == 0
+    assert frame_2.header_size == 0
+    assert frame_2.preamble == 0
+
+
+def test_wire_frame_implements_str():
+    pkt_1 = NetworkPacket(data=AppData(100))
+    pkt_2 = NetworkPacket(data=AppData(200))
+
+    frame_1 = WireFrame(pkt_1, header_size=10, preamble=1, duration=2)
+    assert str(frame_1) == f'WireFrame[D=2,HDR=10,PR=1 | {pkt_1}]'
+
+    frame_2 = WireFrame(pkt_2)
+    assert str(frame_2) == f'WireFrame[D=0,HDR=0,PR=0 | {pkt_2}]'
+
+
+#############################################################################
+# TEST WiredInterface MODEL
+#############################################################################
+
+# noinspection PyPropertyAccess
+@pytest.mark.parametrize('address, bitrate, header_size, preamble, ifs', (
+        (1, 100, 10, 0.2, 0.05),
+        (8, 512, 22, 0.08, 0.1),
 ))
-def test_wired_interface_properties(address, bitrate, header_size, preamble):
+def test_wired_interface_properties(
+        address, bitrate, header_size, preamble, ifs
+):
     sim = Mock()
     iface = WiredInterface(
         sim, address=address, bitrate=bitrate, header_size=header_size,
-        preamble=preamble,
+        preamble=preamble, ifs=ifs,
     )
 
     # Check that interface has a read-only address:
@@ -28,20 +67,30 @@ def test_wired_interface_properties(address, bitrate, header_size, preamble):
     with pytest.raises(AttributeError):
         iface.address = 13
 
-    # Check that interface has bitrate, and it may be updated:
+    # Check that interface has bitrate, header size, preamble and ifs attrs:
     assert iface.bitrate == bitrate
-    iface.bitrate = 3434
-    assert iface.bitrate == 3434
-    iface.bitrate = bitrate
-
-    # Check that header size and preamble can be read:
     assert iface.header_size == header_size
     assert iface.preamble == preamble
+    assert iface.ifs == ifs
 
     # We also check that interface is in ready state, but not started:
-    assert iface.tx_ready
-    assert not iface.busy
     assert not iface.started
+    assert iface.tx_ready
+    assert not iface.tx_busy
+    assert iface.rx_ready
+    assert not iface.rx_busy
+
+    # Check that statuses are read-only from outside:
+    with pytest.raises(AttributeError):
+        iface.started = False
+    with pytest.raises(AttributeError):
+        iface.tx_ready = True
+    with pytest.raises(AttributeError):
+        iface.tx_busy = False
+    with pytest.raises(AttributeError):
+        iface.rx_ready = True
+    with pytest.raises(AttributeError):
+        iface.rx_busy = False
 
 
 @pytest.mark.parametrize('address, bitrate, header_size, preamble, ifs', (
@@ -69,9 +118,9 @@ def test_wired_interface_packet_from_queue_transmission(
 
     iface.start()  # start of the interface causes `get_next()` call
 
-    assert iface.started and iface.tx_ready and not iface.busy
     queue.get_next.assert_called_once_with(iface)
     queue.get_next.reset_mock()
+    assert iface.started and iface.tx_ready and not iface.tx_busy
 
     #
     # After being started, interface expects a `NetworkPacket` in its
@@ -98,6 +147,7 @@ def test_wired_interface_packet_from_queue_transmission(
             'preamble': preamble,
         }
         frame_instance = Mock()
+        frame_instance.duration = duration
         WireFrameMock.return_value = frame_instance
 
         iface.handle_message(packet, sender=queue, connection=queue_conn)
@@ -109,22 +159,18 @@ def test_wired_interface_packet_from_queue_transmission(
         WireFrameMock.assert_called_once_with(**frame_kwargs)
 
         # Also check that wired interface scheduled a timeout:
-        sim.schedule.assert_any_call(
-            duration, iface.handle_tx_end, args=ANY, kwargs=ANY
-        )
+        sim.schedule.assert_any_call(duration, iface.handle_tx_end)
 
         # .. and that now interface is busy:
-        assert iface.started and not iface.tx_ready and iface.busy
+        assert iface.started and not iface.tx_ready and iface.tx_busy
         sim.schedule.reset_mock()
 
     # Now we imitate `handle_tx_end()` call, make sure that after that the
     # interface is not yet ready, but schedules `handle_ifs_end()`:
     sim.stime = duration
     iface.handle_tx_end()
-    sim.schedule.assert_called_once_with(
-        ifs, iface.handle_ifs_end, args=ANY, kwargs=ANY
-    )
-    assert iface.started and not iface.tx_ready and iface.busy
+    sim.schedule.assert_called_once_with(ifs, iface.handle_ifs_end)
+    assert iface.started and not iface.tx_ready and iface.tx_busy
 
     # After the IFS waiting finished, interface is expected to call
     # `queue.get_next(iface)` and be ready for new packets:
@@ -137,8 +183,8 @@ def test_wired_interface_packet_from_queue_transmission(
 def test_wired_interface_raises_error_if_requested_tx_during_another_tx():
     sim, peer, queue = Mock(), Mock(), Mock()
     iface = WiredInterface(sim, address=0, bitrate=100)
-    queue_conn = iface.connect('queue', queue, rname='iface')
-    iface.connect('peer', peer, rname='peer')
+    queue_conn = iface.connections.set('queue', queue, rname='iface')
+    iface.connections.set('peer', peer, rname='peer')
 
     pkt_1 = NetworkPacket(data=AppData(size=10))
     pkt_2 = NetworkPacket(data=AppData(size=20))
@@ -165,10 +211,10 @@ def test_wired_interface_sends_data_up_when_rx_completed():
 
     assert iface.rx_ready and not iface.rx_busy
 
-    iface.handle_message(frame, sender=sender, conneciton=sender_conn)
+    iface.handle_message(frame, sender=sender, connection=sender_conn)
     assert not iface.rx_ready and iface.rx_busy
     sim.schedule.assert_called_once_with(
-        frame.duration, iface.handle_rx_end, args=(frame,), kwargs=ANY
+        frame.duration, iface.handle_rx_end, args=(frame,),
     )
     sim.schedule.reset_mock()
 
@@ -182,107 +228,83 @@ def test_wired_interface_sends_data_up_when_rx_completed():
     assert iface.rx_ready and not iface.rx_busy
 
 
-def test_wired_interface_is_full_duplex():
-    bitrate = [1000, 1500]
-    address = [10, 20]
-    size = [190, 140]
-    preamble = [0.05, 0.08]
-    header_size = [16, 12]
-    ifs = [0.1, 0.2]
-    delay = 0.0023
-    duration = [
-        preamble[i] + (size[i] + header_size[i]) / bitrate[i] for i in range(2)
-    ]
-    packets = [NetworkPacket(data=AppData(size=sz)) for sz in size]
-    frame_mocks = [Mock(), Mock()]
-    for frame, pkt, d, hs in zip(frame_mocks, packets, duration, header_size):
-        frame.packet = pkt
-        frame.duration = d
-        frame.header_size = hs
-
-    sim, queues, switches = Mock(), (Mock(), Mock()), (Mock(), Mock())
+@pytest.mark.parametrize('bitrate, header_size, preamble, size', (
+        (1000, 10, 0.2, 1540),
+        (2000, 12, 0.3, 800),
+))
+def test_wired_interface_is_full_duplex(bitrate, header_size, preamble, size):
+    sim, peer, queue, switch = Mock(), Mock(), Mock(), Mock()
     sim.stime = 0
 
-    ifaces = [
-        WiredInterface(sim, address=a, bitrate=b, preamble=p, header_size=h)
-        for a, b, p, h in zip(address, bitrate, preamble, header_size)
-    ]
+    eth = WiredInterface(sim, address=0, header_size=header_size,
+                         bitrate=bitrate, preamble=preamble, ifs=0)
 
-    queue_rev_conns = []
-    switch_rev_conns = []
-    for i in range(2):
-        queue_rev_conn = Mock()
-        queues[i].connections.set = Mock(return_value=queue_rev_conn)
-        queue_rev_conns.append(queue_rev_conn)
+    peer_conn = eth.connections.set('peer', peer, reverse=False)
+    queue_conn = eth.connections.set('queue', queue, reverse=False)
+    eth.connections.set('up', switch, reverse=False)
 
-        switch_rev_conn = Mock()
-        switches[i].connections.set = Mock(return_value=switch_rev_conn)
-        switch_rev_conns.append(switch_rev_conn)
+    inp_pkt = NetworkPacket(data=AppData(size=size))
+    out_pkt_1 = NetworkPacket(data=AppData(size=size))
+    out_pkt_2 = NetworkPacket(data=AppData(size=size))
+    duration = (header_size + size) / bitrate + preamble
+    frame = WireFrame(inp_pkt, duration=duration, header_size=header_size,
+                      preamble=preamble)
 
-        ifaces[i].connect('queue', queues[i], rname='iface')
-        ifaces[i].connect('up', switches[i], rname='iface')
+    # 1) Interface starts transmitting `out_pkt_1`:
+    sim.stime = 0
+    eth.start()
+    eth.handle_message(out_pkt_1, queue_conn, queue)
+    assert eth.tx_busy
+    assert eth.rx_ready
+    sim.schedule.assert_any_call(duration, eth.handle_tx_end)
+    sim.schedule.assert_any_call(0, peer.handle_message, args=ANY, kwargs=ANY)
+    sim.schedule.reset_mock()
 
-        ifaces[i].start()
+    # 2) Then, after 2/3 of the packet was transmitted, a packet arrives:
+    sim.stime = 2 * duration / 3
+    eth.handle_message(frame, peer_conn, peer)
+    assert eth.tx_busy
+    assert eth.rx_busy
+    sim.schedule.assert_called_with(duration, eth.handle_rx_end, args=(frame,))
+    sim.schedule.reset_mock()
 
-    ifaces[0].connections.set('peer', ifaces[1], rname='peer')
-    ifaces[0].connections['peer'].delay = delay
-    ifaces[1].connections['peer'].delay = delay
+    # 3) After duration, call handle_tx_end and handle_ifs_end:
+    sim.stime = duration
+    eth.handle_tx_end()
+    eth.handle_ifs_end()
+    assert eth.tx_ready
+    assert eth.rx_busy
+    sim.schedule.reset_mock()
 
-    with patch(WIRE_FRAME_CLASS) as WireFrameMock:
-        #
-        # 1) The first interface starts transmit:
-        #
-        WireFrameMock.return_value = frame_mocks[0]
-        ifaces[0].handle_message(
-            packets[0], sender='queue', connection=queue_rev_conns[0]
-        )
-        sim.schedule.assert_any_call(
-            delay, ifaces[1].handle_message, args=(frame_mocks[0],), kwargs={
-                'sender': ifaces[0], 'connection': ifaces[0].connections['peer']
-            }
-        )
-        sim.schedule.reset_mock()
-        assert ifaces[0].tx_busy and ifaces[0].rx_ready
+    # 4) After another 1/3 duration start new TX (during RX this time):
+    sim.stime = 4/3 * duration
+    eth.handle_message(out_pkt_2, queue_conn, queue)
+    assert eth.tx_busy
+    assert eth.rx_busy
+    sim.schedule.assert_any_call(duration, eth.handle_tx_end)
+    sim.schedule.assert_any_call(0, peer.handle_message, args=ANY, kwargs=ANY)
+    sim.schedule.reset_mock()
 
-        # ... and the second interface also starts transmit:
-        WireFrameMock.return_value = frame_mocks[1]
-        ifaces[1].handle_message(
-            packets[1], sender='queue', connection=queue_rev_conns[1]
-        )
-        sim.schedule.assert_any_call(
-            delay, ifaces[0].handle_message, args=(frame_mocks[1],), kwargs={
-                'sender': ifaces[1], 'connection': ifaces[1].connections['peer']
-            }
-        )
-        sim.schedule.reset_mock()
-        assert ifaces[1].tx_busy and ifaces[1].rx_ready
+    # 5) After 5/3 duration, RX ends, but TX still goes on:
+    sim.stime = 5/3 * duration
+    eth.handle_rx_end(frame)
+    assert eth.tx_busy
+    assert eth.rx_ready
+    sim.schedule.assert_called_with(0, switch.handle_message, args=ANY,
+                                    kwargs=ANY)
 
-        #
-        # 2) Simulate like the message receive started (propagation delay
-        # is smaller then packet duration):
-        #
-        sim.stime = delay
-        ifaces[1].handle_message(
-            frame_mocks[0], sender=ifaces[0],
-            connection=ifaces[1].connections['peer']
-        )
-        sim.schedule.assert_called_once_with(
-            duration[0], ifaces[1].handle_rx_end, args=frame_mocks[0],
-            kwargs=ANY
-        )
-        sim.schedule.reset_mock()
-        assert ifaces[1].tx_busy and ifaces[1].rx_busy
 
-        ifaces[0].handle_message(
-            frame_mocks[1], sender=ifaces[1],
-            connection=ifaces[0].connections['peer']
-        )
-        sim.schedule.assert_called_once_with(
-            duration[0], ifaces[1].handle_rx_end, args=frame_mocks[0],
-            kwargs=ANY
-        )
-        sim.schedule.reset_mock()
-        assert ifaces[0].tx_busy and ifaces[0].rx_busy
+def test_wired_interface_ignores_frames_not_from_peer():
+    sim, sender, switch = Mock(), Mock(), Mock()
+    sim.stime = 0
+    iface = WiredInterface(sim, address=0)
 
-        # If we are here and now errors raised, everything is expected to be
-        # fine - finish the test.
+    pkt = NetworkPacket(data=AppData(size=100))
+    frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
+
+    iface.connections.set('up', switch, reverse=False)
+    sender_conn = iface.connections.set('wrong_name', sender, reverse=False)
+
+    iface.handle_message(frame, sender=sender, connection=sender_conn)
+    sim.schedule.assert_not_called()
+    assert iface.rx_ready
