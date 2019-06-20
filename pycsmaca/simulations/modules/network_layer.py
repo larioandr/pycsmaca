@@ -38,6 +38,10 @@ class NetworkPacket:
         self.osn = osn
         self.data = data
 
+    @property
+    def size(self):
+        return self.data.size if self.data else 0
+
     def __str__(self):
         fields = []
         for field, value in [

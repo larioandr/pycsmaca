@@ -183,6 +183,17 @@ def test_network_packet_implements_str():
     assert str(pkt3) == f'NetPkt{{DST=8}}'
 
 
+def test_network_packet_size():
+    data = MagicMock()
+    data.size = 100
+
+    pkt1 = NetworkPacket(data=data)
+    pkt2 = NetworkPacket()
+
+    assert pkt1.size == 100
+    assert pkt2.size == 0
+
+
 #############################################################################
 # TEST SwitchTable
 #############################################################################
