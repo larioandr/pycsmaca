@@ -20,7 +20,6 @@ CWMAX = 8
 SPEED_OF_LIGHT = 1e5   # meters per second
 
 
-@pytest.mark.skip
 def test_bianchi_time_without_collisions():
     radius = 100
 
