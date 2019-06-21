@@ -1,5 +1,5 @@
 from numpy import inf
-from pydesim import Model
+from pydesim import Model, Trace
 
 
 class WireFrame:
@@ -8,6 +8,10 @@ class WireFrame:
         self.duration = duration
         self.header_size = header_size
         self.preamble = preamble
+
+    @property
+    def size(self):
+        return self.header_size + (self.packet.size if self.packet else 0)
 
     def __str__(self):
         fields = ','.join([
@@ -19,6 +23,42 @@ class WireFrame:
 
 
 class WiredTransceiver(Model):
+    """This module models a simple wired full-duplex transceiver.
+
+    `WiredTransceiver` simulates a simple wired network card. It sends packets
+    in `WireFrame`s instances with constant bitrate. Each frame can have
+    a preamble and some header. After transmission, `WiredTransceiver` waits
+    IFS before sending another frame.
+
+    `WiredTransceiver` receives data from the queue. Upon construction, it
+    schedules `_start()` call, which will request data from the queue. Note
+    that `'queue'` connection MUST be added right after creation to make this
+    work. Upon `_start()` call, `WiredTransceiver` will request packets with
+    `queue.get_next(self)` call.
+
+    `WiredTransceiver` requests other packets when TX operation finishes and
+    it waits IFS. To request additional packets, it calls `queue.get_next()`.
+
+    `WiredTransceiver` is expected to have the only one peer, which typically
+    is another `WiredTransceiver` module. They MUST be connected with `'peer'`
+    bi-directional connection. Reception is performed in two steps: when
+    the frame reaches the transceiver, it marks RX as busy, and schedules
+    frame reception end at `frame.duration`. Upon frame RX end, RX is marked
+    as ready.
+
+    If `WiredTransceiver` receives a packet from the `Queue` during another
+    TX operation running, it will throw a `RuntimeError` exception.
+
+    `WiredTransceiver` needs three connections:
+
+    - `'peer'`: a bi-directional connection to another transceiver (mandatory);
+    - `'queue'`: a bi-directional connection to the packets queue (mandatory);
+    - `'up'`: a bi-directional connection to the switch (optional).
+
+    If `'up'` connection is defined, the received packets are sent through it.
+    Otherwise, they are silently dropped. Typically, `'up'` connects a
+    `NetworkSwitch` module, or parent `NetworkInterface`.
+    """
     def __init__(self, sim, bitrate=inf, header_size=0, preamble=0, ifs=0):
         super().__init__(sim)
         self.bitrate = bitrate
@@ -30,6 +70,17 @@ class WiredTransceiver(Model):
         self.__tx_frame = None
         self.__wait_ifs = False
         self.__rx_frame = None
+        # Statistics:
+        self.__num_received_frames = 0
+        self.__num_received_bits = 0
+        self.__rx_busy_trace = Trace()
+        self.__rx_busy_trace.record(0, 0)
+        self.__num_transmitted_packets = 0
+        self.__num_transmitted_bits = 0
+        self.__tx_busy_trace = Trace()
+        self.__tx_busy_trace.record(0, 0)
+        # Initialization:
+        self.sim.schedule(self.sim.stime, self.start)
 
     @property
     def started(self):
@@ -51,6 +102,30 @@ class WiredTransceiver(Model):
     def rx_busy(self):
         return not self.rx_ready
 
+    @property
+    def num_received_frames(self):
+        return self.__num_received_frames
+
+    @property
+    def num_received_bits(self):
+        return self.__num_received_bits
+
+    @property
+    def rx_busy_trace(self):
+        return self.__rx_busy_trace
+
+    @property
+    def num_transmitted_packets(self):
+        return self.__num_transmitted_packets
+
+    @property
+    def num_transmitted_bits(self):
+        return self.__num_transmitted_bits
+
+    @property
+    def tx_busy_trace(self):
+        return self.__tx_busy_trace
+
     def start(self):
         self.connections['queue'].module.get_next(self)
         self.__started = True
@@ -68,21 +143,30 @@ class WiredTransceiver(Model):
             self.connections['peer'].send(frame)
             self.sim.schedule(duration, self.handle_tx_end)
             self.__tx_frame = frame
+            self.__tx_busy_trace.record(self.sim.stime, 1)
         elif connection.name == 'peer':
             self.sim.schedule(
                 message.duration, self.handle_rx_end, args=(message,)
             )
             self.__rx_frame = message
+            self.__rx_busy_trace.record(self.sim.stime, 1)
 
     def handle_tx_end(self):
-        self.__tx_frame = None
         self.__wait_ifs = True
         self.sim.schedule(self.ifs, self.handle_ifs_end)
+        self.__num_transmitted_packets += 1
+        self.__num_transmitted_bits += self.__tx_frame.size
+        self.__tx_frame = None
 
     def handle_ifs_end(self):
         self.__wait_ifs = False
         self.connections['queue'].module.get_next(self)
+        self.__tx_busy_trace.record(self.sim.stime, 0)
 
     def handle_rx_end(self, frame):
-        self.connections['up'].send(frame.packet)
+        if 'up' in self.connections:
+            self.connections['up'].send(frame.packet)
         self.__rx_frame = None
+        self.__num_received_frames += 1
+        self.__num_received_bits += frame.size
+        self.__rx_busy_trace.record(self.sim.stime, 0)

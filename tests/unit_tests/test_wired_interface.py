@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch, ANY
 
 import pytest
+from numpy import asarray, cumsum
 
 from pycsmaca.simulations.modules.app_layer import AppData
 from pycsmaca.simulations.modules.network_layer import NetworkPacket
@@ -24,12 +25,14 @@ def test_wire_frame_init_and_properties():
     assert frame_1.duration == 1.5
     assert frame_1.header_size == 10
     assert frame_1.preamble == 0.2
+    assert frame_1.size == 10 + pkt_1.size
 
     frame_2 = WireFrame(packet=pkt_2)
     assert frame_2.packet == pkt_2
     assert frame_2.duration == 0
     assert frame_2.header_size == 0
     assert frame_2.preamble == 0
+    assert frame_2.size == 0
 
 
 def test_wire_frame_implements_str():
@@ -54,6 +57,7 @@ def test_wire_frame_implements_str():
 ))
 def test_wired_transceiver_properties(bitrate, header_size, preamble, ifs):
     sim = Mock()
+    sim.stime = 13
     iface = WiredTransceiver(
         sim, bitrate=bitrate, header_size=header_size, preamble=preamble,
         ifs=ifs,
@@ -83,6 +87,9 @@ def test_wired_transceiver_properties(bitrate, header_size, preamble, ifs):
         iface.rx_ready = True
     with pytest.raises(AttributeError):
         iface.rx_busy = False
+
+    # Finally, we assert that `WiredTransceiver` scheduled `start()` call:
+    sim.schedule.assert_called_once_with(sim.stime, iface.start)
 
 
 @pytest.mark.parametrize('bitrate, header_size, preamble, ifs', (
@@ -139,8 +146,10 @@ def test_wired_transceiver_packet_from_queue_transmission(
         }
         frame_instance = Mock()
         frame_instance.duration = duration
+        frame_instance.size = header_size + packet.size
         WireFrameMock.return_value = frame_instance
 
+        sim.stime = 0
         iface.handle_message(packet, sender=queue, connection=queue_conn)
         sim.schedule.assert_any_call(
             0, peer.handle_message, args=(frame_instance,), kwargs={
@@ -180,6 +189,7 @@ def test_wired_transceiver_raises_error_if_requested_tx_during_another_tx():
     pkt_1 = NetworkPacket(data=AppData(size=10))
     pkt_2 = NetworkPacket(data=AppData(size=20))
 
+    sim.stime = 0
     iface.start()
     iface.handle_message(pkt_1, sender=queue, connection=queue_conn)
 
@@ -191,6 +201,7 @@ def test_wired_transceiver_sends_data_up_when_rx_completed():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
     iface = WiredTransceiver(sim)
+    sim.schedule.reset_mock()  # clear sim.schedule(0, iface.start) call
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
@@ -289,6 +300,7 @@ def test_wired_transceiver_ignores_frames_not_from_peer():
     sim, sender, switch = Mock(), Mock(), Mock()
     sim.stime = 0
     iface = WiredTransceiver(sim)
+    sim.schedule.reset_mock()  # clear sim.schedule(0, iface.start) call
 
     pkt = NetworkPacket(data=AppData(size=100))
     frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
@@ -301,4 +313,112 @@ def test_wired_transceiver_ignores_frames_not_from_peer():
     assert iface.rx_ready
 
 
-# def test_wired_transceiver_records_busy_trace():
+def test_wired_transceiver_drops_received_message_if_not_connected_to_switch():
+    sim, sender = Mock(), Mock()
+    sim.stime = 0
+
+    iface = WiredTransceiver(sim)
+    sender_conn = iface.connections.set('peer', sender, rname='peer')
+
+    pkt = NetworkPacket(data=AppData(size=100))
+    frame = WireFrame(pkt, duration=0.5, header_size=20, preamble=0.01)
+
+    iface.handle_message(frame, sender=sender, connection=sender_conn)
+    sim.stime += frame.duration
+
+    sim.schedule.reset_mock()
+    iface.handle_rx_end(frame)
+    sim.schedule.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'bitrate, data_sizes, header_size, preamble, intervals', [
+        (1000, [100, 150, 220, 329], 12, 0.05, [1.1, 2.3, 0, 0.5]),
+        (1500, [90, 132, 85, 412], 20, 0.01, [0.05, 0, 0, 1.2]),
+    ]
+)
+def test_wired_transceiver_records_rx_statistics(
+        bitrate, data_sizes, header_size, preamble, intervals):
+    sim, sender = Mock(), Mock()
+    sim.stime = 0
+
+    iface = WiredTransceiver(sim, bitrate, header_size, preamble)
+    sender_conn = iface.connections.set('peer', sender, rname='peer')
+
+    packets = [NetworkPacket(data=AppData(size=sz)) for sz in data_sizes]
+    durations = [(sz + header_size) / bitrate + preamble for sz in data_sizes]
+    frames = [
+        WireFrame(pkt, dt, header_size, preamble)
+        for pkt, dt in zip(packets, durations)
+    ]
+    t, timestamps = 0, []
+    for interval, duration in zip(intervals, durations):
+        t_arrival = t + interval
+        t_departure = t_arrival + duration
+        t = t_departure
+        timestamps.append((t_arrival, t_departure))
+
+    # Simulating receive sequence
+    for (t_arrival, t_departure), frame in zip(timestamps, frames):
+        sim.stime = t_arrival
+        iface.handle_message(frame, sender=sender, connection=sender_conn)
+
+        sim.stime = t_departure
+        iface.handle_rx_end(frame)
+
+    # Check RX statistics:
+    expected_busy_trace = [(0, 0)]
+    for t_arrival, t_departure in timestamps:
+        expected_busy_trace.append((t_arrival, 1))
+        expected_busy_trace.append((t_departure, 0))
+
+    assert iface.num_received_frames == len(frames)
+    assert iface.num_received_bits == sum(frame.size for frame in frames)
+    assert iface.rx_busy_trace.as_tuple() == tuple(expected_busy_trace)
+
+
+@pytest.mark.parametrize(
+    'bitrate, data_sizes, header_size, preamble, intervals, ifs', [
+        (1000, [100, 150, 220, 329], 12, 0.05, [1.1, 2.3, 0, 0.5], 0.05),
+        (1500, [90, 132, 85, 412], 20, 0.01, [0.05, 0, 0, 1.2], 0.13),
+    ]
+)
+def test_wired_transceiver_records_tx_statistics(
+        bitrate, data_sizes, header_size, preamble, intervals, ifs):
+    sim, receiver, queue = Mock(), Mock(), Mock()
+    sim.stime = 0
+
+    iface = WiredTransceiver(sim, bitrate, header_size, preamble, ifs)
+    iface.connections.set('peer', receiver, rname='peer')
+    queue_conn = iface.connections.set('queue', queue, reverse=False)
+
+    packets = [NetworkPacket(data=AppData(size=sz)) for sz in data_sizes]
+    frame_sizes = [sz + header_size for sz in data_sizes]
+    durations = [(sz + header_size) / bitrate + preamble for sz in data_sizes]
+    t, timestamps = 0, []
+    for interval, duration in zip(intervals, durations):
+        t_arrival = t + interval
+        t_departure = t_arrival + duration + ifs
+        timestamps.append((t_arrival, t_departure))
+        t = t_departure
+
+    # Simulating transmit sequence
+    for (t_arrival, t_departure), packet in zip(timestamps, packets):
+        sim.stime = t_arrival
+        iface.handle_message(packet, sender=queue, connection=queue_conn)
+
+        sim.stime = t_departure - ifs
+        iface.handle_tx_end()
+
+        sim.stime = t_departure
+        iface.handle_ifs_end()
+
+    # Check TX statistics:
+    expected_busy_trace = [(0, 0)]
+    for t_arrival, t_departure in timestamps:
+        expected_busy_trace.append((t_arrival, 1))
+        expected_busy_trace.append((t_departure, 0))
+
+    assert iface.num_transmitted_packets == len(packets)
+    assert iface.num_transmitted_bits == sum(sz for sz in frame_sizes)
+    assert iface.tx_busy_trace.as_tuple() == tuple(expected_busy_trace)
