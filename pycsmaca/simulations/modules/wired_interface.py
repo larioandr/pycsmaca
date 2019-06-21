@@ -126,6 +126,10 @@ class WiredTransceiver(Model):
     def tx_busy_trace(self):
         return self.__tx_busy_trace
 
+    @property
+    def tx_frame(self):
+        return self.__tx_frame
+
     def start(self):
         self.connections['queue'].module.get_next(self)
         self.__started = True
@@ -170,3 +174,41 @@ class WiredTransceiver(Model):
         self.__num_received_frames += 1
         self.__num_received_bits += frame.size
         self.__rx_busy_trace.record(self.sim.stime, 0)
+
+
+class WiredInterface(Model):
+    def __init__(self, sim, address, queue, transceiver):
+        super().__init__(sim)
+        self.__address = address
+        self.__queue = queue
+        self.__transceiver = transceiver
+        # Making queue and transceiver self children:
+        self.children['queue'] = queue
+        self.children['transceiver'] = transceiver
+        # Establishing internal connections:
+        self.connections['_queue'] = self.__queue
+        self.connections.set('_receiver', transceiver, rname='up')
+        self.connections.set('_peer', transceiver, rname='peer')
+        transceiver.connections.set('queue', queue, rname='service')
+
+    @property
+    def address(self):
+        return self.__address
+
+    @property
+    def queue(self):
+        return self.__queue
+
+    @property
+    def transceiver(self):
+        return self.__transceiver
+
+    def handle_message(self, message, connection=None, sender=None):
+        if connection.name == 'user':
+            self.connections['_queue'].send(message)
+        elif connection.name == 'wire':
+            self.connections['_peer'].send(message)
+        elif connection.name == '_receiver':
+            self.connections['user'].send(message)
+        elif connection.name == '_peer':
+            self.connections['wire'].send(message)

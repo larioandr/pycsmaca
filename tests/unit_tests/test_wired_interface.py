@@ -6,9 +6,8 @@ from numpy import asarray, cumsum
 from pycsmaca.simulations.modules.app_layer import AppData
 from pycsmaca.simulations.modules.network_layer import NetworkPacket
 from pycsmaca.simulations.modules.wired_interface import (
-    WiredTransceiver, WireFrame
+    WiredTransceiver, WireFrame, WiredInterface,
 )
-
 
 WIRE_FRAME_CLASS = 'pycsmaca.simulations.modules.wired_interface.WireFrame'
 
@@ -279,7 +278,7 @@ def test_wired_transceiver_is_full_duplex(bitrate, header_size, preamble, size):
     sim.schedule.reset_mock()
 
     # 4) After another 1/3 duration start new TX (during RX this time):
-    sim.stime = 4/3 * duration
+    sim.stime = 4 / 3 * duration
     eth.handle_message(out_pkt_2, queue_conn, queue)
     assert eth.tx_busy
     assert eth.rx_busy
@@ -288,7 +287,7 @@ def test_wired_transceiver_is_full_duplex(bitrate, header_size, preamble, size):
     sim.schedule.reset_mock()
 
     # 5) After 5/3 duration, RX ends, but TX still goes on:
-    sim.stime = 5/3 * duration
+    sim.stime = 5 / 3 * duration
     eth.handle_rx_end(frame)
     assert eth.tx_busy
     assert eth.rx_ready
@@ -422,3 +421,225 @@ def test_wired_transceiver_records_tx_statistics(
     assert iface.num_transmitted_packets == len(packets)
     assert iface.num_transmitted_bits == sum(sz for sz in frame_sizes)
     assert iface.tx_busy_trace.as_tuple() == tuple(expected_busy_trace)
+
+
+#############################################################################
+# TEST WiredInterface MODEL
+#############################################################################
+# noinspection PyProtectedMember,PyPropertyAccess
+def test_wired_interface_creation_and_properties():
+    sim, queue, transceiver = Mock(), Mock(), Mock()
+
+    transceiver_rev_conn = Mock()
+    transceiver.connections.set = Mock(return_value=transceiver_rev_conn)
+
+    iface = WiredInterface(sim, 13, queue, transceiver)
+
+    # 1) Check components and properties:
+    assert iface.address == 13
+    with pytest.raises(AttributeError):
+        iface.address = 5
+
+    assert iface.queue == queue
+    with pytest.raises(AttributeError):
+        iface.queue = queue
+
+    assert iface.transceiver == transceiver
+    with pytest.raises(AttributeError):
+        iface.transceiver = transceiver
+
+    # 2) Make sure that queue and transceiver are children of the interface:
+    queue._set_parent.assert_called_once_with(iface)
+    transceiver._set_parent.assert_called_once_with(iface)
+
+    # 3) Check that internal connections are established:
+    # 3.1) '_queue': iface --> queue:
+    assert '_queue' in iface.connections
+    assert iface.connections['_queue'].module == queue
+
+    # 3.2) '_receiver': transceiver ---{'up'}--------> iface
+    #                   transceiver <--{'_receiver'}-- iface
+    assert '_receiver' in iface.connections
+    assert iface.connections['_receiver'].module == transceiver
+    assert iface.connections['_receiver'].reverse == transceiver_rev_conn
+    transceiver.connections.set.assert_any_call('up', iface, reverse=False)
+
+    # 3.3) '_peer': transceiver ---{'peer'}--> iface
+    #               transceiver <--{'_peer'}-- iface
+    assert '_peer' in iface.connections
+    assert iface.connections['_peer'].module == transceiver
+    assert iface.connections['_peer'].reverse == transceiver_rev_conn
+    transceiver.connections.set.assert_any_call('peer', iface, reverse=False)
+
+
+def test_wired_interface_forwards_packets_from_user_to_queue():
+    sim, queue, transceiver, user = Mock(), Mock(), Mock(), Mock()
+    iface = WiredInterface(sim, 13, queue, transceiver)
+
+    user_conn = iface.connections.set('user', user, rname='iface')
+    pkt = NetworkPacket(data=AppData(size=100))
+    iface.handle_message(pkt, connection=user_conn, sender=user)
+
+    int_queue_conn = iface.connections['_queue']
+
+    sim.schedule.assert_called_once_with(
+        0, queue.handle_message, args=(pkt,), kwargs={
+            'connection': int_queue_conn.reverse, 'sender': iface,
+        })
+
+
+def test_wired_interface_forwards_frames_from_wire_to_transceiver():
+    sim, queue, transceiver, peer = Mock(), Mock(), Mock(), Mock()
+    iface = WiredInterface(sim, 13, queue, transceiver)
+
+    peer_conn = iface.connections.set('wire', peer, rname='wire')
+    frame = WireFrame(NetworkPacket(data=AppData(size=100)))
+    iface.handle_message(frame, connection=peer_conn, sender=peer)
+
+    int_peer_conn = iface.connections['_peer']
+
+    sim.schedule.assert_called_once_with(
+        0, transceiver.handle_message, args=(frame,), kwargs={
+            'connection': int_peer_conn.reverse, 'sender': iface
+        })
+
+
+def test_wired_interface_forwards_packets_after_rx_end_to_user():
+    sim, queue, transceiver, user = Mock(), Mock(), Mock(), Mock()
+    iface = WiredInterface(sim, 13, queue, transceiver)
+
+    user_conn = iface.connections.set('user', user, rname='iface')
+
+    int_receiver_conn = iface.connections['_receiver']
+    pkt = NetworkPacket(data=AppData(size=100))
+
+    iface.handle_message(pkt, connection=int_receiver_conn, sender=transceiver)
+
+    sim.schedule.assert_called_once_with(
+        0, user.handle_message, args=(pkt,), kwargs={
+            'connection': user_conn.reverse, 'sender': iface,
+        })
+
+
+def test_wired_interface_integration_serves_user_packet():
+    sim, user, peer = Mock(), Mock(), Mock()
+    sim.stime = 10
+
+    from pycsmaca.simulations.modules.queues import Queue
+    queue = Queue(sim)
+    transceiver = WiredTransceiver(sim, 1000, 22, 0.03, 0.05)
+    iface = WiredInterface(sim, 1, queue=queue, transceiver=transceiver)
+
+    user_conn = iface.connections.set('user', user, rname='iface')
+
+    wire_rev_conn = Mock()
+    peer.connections.set = Mock(return_value=wire_rev_conn)
+    wire_conn = iface.connections.set('wire', peer, rname='wire')
+    wire_conn.delay = 0.01
+
+    user_pkt = NetworkPacket(data=AppData(size=100))
+
+    transceiver_queue_conn = transceiver.connections['queue']
+    queue_iface_conn = iface.connections['_queue'].reverse
+    iface_transceiver_conn = iface.connections['_peer']
+
+    # First of all, we need to force transceiver start, since no actual
+    # simulation execution is performed:
+    transceiver.start()
+
+    # 1) Simulate like a new packet arrived from user, make sure that queue
+    #    delivery was scheduled:
+    iface.handle_message(user_pkt, connection=user_conn, sender=user)
+    sim.schedule.assert_called_with(
+        0, queue.handle_message, args=(user_pkt,), kwargs={
+            'connection': queue_iface_conn, 'sender': iface,
+        })
+    sim.schedule.reset_mock()
+
+    # 2) Force execution of queue packet delivery, make sure the packet arrives
+    #    at the transceiver:
+    queue.handle_message(user_pkt, queue_iface_conn, iface)
+    sim.schedule.assert_called_with(
+        0, transceiver.handle_message, args=(user_pkt,), kwargs={
+            'connection': transceiver_queue_conn, 'sender': queue,
+        })
+    sim.schedule.reset_mock()
+
+    # 3) Force packet handling at the transceiver and make sure it schedules
+    #    packet delivery at its peer (iface itself):
+    transceiver.handle_message(
+        user_pkt, connection=transceiver_queue_conn, sender=queue)
+    frame = transceiver.tx_frame
+    sim.schedule.assert_any_call(
+        0, iface.handle_message, args=(frame,), kwargs={
+            'connection': iface_transceiver_conn, 'sender': transceiver,
+        }
+    )
+    assert frame.packet == user_pkt
+    sim.schedule.reset_mock()
+
+    # 4) Finally, force frame arrival at the interface and make sure it
+    #    schedules frame reception at its peer after the channel delay:
+    iface.handle_message(frame, iface_transceiver_conn, transceiver)
+    sim.schedule.assert_called_with(
+        wire_conn.delay, peer.handle_message, args=(frame,), kwargs={
+            'connection': wire_rev_conn, 'sender': iface,
+        })
+
+
+def test_wired_interface_integration_receives_frame():
+    sim, user, peer = Mock(), Mock(), Mock()
+    sim.stime = 10
+
+    from pycsmaca.simulations.modules.queues import Queue
+    queue = Queue(sim)
+    transceiver = WiredTransceiver(sim, 1000, 22, 0.1, 0.05)
+    iface = WiredInterface(sim, 0, queue=queue, transceiver=transceiver)
+
+    user_rev_conn = Mock()
+    user.connections.set = Mock(return_value=user_rev_conn)
+    iface.connections.set('user', user, rname='iface')
+
+    wire_rev_conn = Mock()
+    peer.connections.set = Mock(return_value=wire_rev_conn)
+    wire_conn = iface.connections.set('wire', peer, rname='wire')
+
+    packet = NetworkPacket(data=AppData(size=242))
+    duration = (packet.size + transceiver.header_size
+                ) / transceiver.bitrate + transceiver.preamble
+    frame = WireFrame(
+        packet, duration, transceiver.header_size, transceiver.preamble)
+
+    transceiver_peer_conn = iface.connections['_peer'].reverse
+    _receiver_conn = iface.connections['_receiver']
+
+    # 1) Simulate like a frame came from the peer:
+    iface.handle_message(frame, connection=wire_conn, sender=peer)
+    sim.schedule.assert_called_with(
+        0, transceiver.handle_message, args=(frame,), kwargs={
+            'connection': transceiver_peer_conn, 'sender': iface,
+        })
+    sim.schedule.reset_mock()
+
+    # 2) Execute transceiver frame reception start, update time and
+    #    execute transceiver frame reception end. Then make sure that
+    #    packet was scheduled for sending up to the interface via 'up':
+    transceiver.handle_message(frame, transceiver_peer_conn, iface)
+    sim.schedule.assert_called_with(
+        duration, transceiver.handle_rx_end, args=(frame,))
+    sim.schedule.reset_mock()
+    sim.stime += duration
+    transceiver.handle_rx_end(frame)
+    sim.schedule.assert_called_with(
+        0, iface.handle_message, args=(packet,), kwargs={
+            'connection': _receiver_conn, 'sender': transceiver,
+        })
+    sim.schedule.reset_mock()
+
+    # 3) Execute interface packet reception, make sure it is delivered to user:
+    iface.handle_message(packet, _receiver_conn, transceiver)
+    sim.schedule.assert_called_with(
+        0, user.handle_message, args=(packet,), kwargs={
+            'connection': user_rev_conn, 'sender': iface,
+        })
+    sim.schedule.reset_mock()
