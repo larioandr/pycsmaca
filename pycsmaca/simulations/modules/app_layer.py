@@ -89,6 +89,7 @@ class RandomSource(Model):
         # Statistics:
         self.__arrival_intervals = Intervals()
         self.__data_size_stat = Statistic()
+        self.__num_packets_sent = 0
 
         # Initialize:
         self.__schedule_next_arrival()
@@ -117,6 +118,10 @@ class RandomSource(Model):
     def dest_addr(self):
         return self.__dest_addr
 
+    @property
+    def num_packets_sent(self):
+        return self.__num_packets_sent
+
     def _generate(self):
         try:
             data_size = self.__get_next_size()
@@ -132,6 +137,8 @@ class RandomSource(Model):
             # Recording statistics:
             self.arrival_intervals.record(self.sim.stime)
             self.data_size_stat.append(data_size)
+            self.__num_packets_sent += 1
+            self.sim.logger.debug(f'generated new packet {app_data}', src=self)
 
     def __get_next_interval(self):
         if self.__interval_iter is not None:
@@ -156,7 +163,8 @@ class RandomSource(Model):
             pass
 
     def __str__(self):
-        return f'Source({self.source_id})'
+        prefix = f'{self.parent}.' if self.parent else ''
+        return f'{prefix}Source({self.source_id})'
 
 
 class Sink(Model):
@@ -186,6 +194,7 @@ class Sink(Model):
         self.__source_delays = ReadOnlyDict(self.__source_delays_data)
         self.__arrival_intervals = Intervals()
         self.__data_size_stat = Statistic()
+        self.__num_packets_received = 0
 
     @property
     def arrival_intervals(self):
@@ -199,6 +208,10 @@ class Sink(Model):
     def source_delays(self):
         return self.__source_delays
 
+    @property
+    def num_packets_received(self):
+        return self.__num_packets_received
+
     def handle_message(self, app_data, sender=None, connection=None):
         sid = app_data.source_id
         if sid not in self.source_delays:
@@ -206,6 +219,8 @@ class Sink(Model):
         self.source_delays[sid].append(self.sim.stime - app_data.created_at)
         self.arrival_intervals.record(self.sim.stime)
         self.data_size_stat.append(app_data.size)
+        self.__num_packets_received += 1
 
     def __str__(self):
-        return 'Sink'
+        prefix = f'{self.parent}.' if self.parent else ''
+        return f'{prefix}Sink'

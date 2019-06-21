@@ -145,7 +145,7 @@ def test_random_source_can_use_finite_data_size_distributions():
 
 
 # noinspection PyProtectedMember
-def test_random_source_provides_intervals_and_sizes_statistics():
+def test_random_source_provides_statistics():
     """Validate that `RandomSource` provides statistics.
     """
     intervals = (10, 12, 15, 17)
@@ -174,6 +174,9 @@ def test_random_source_provides_intervals_and_sizes_statistics():
     with pytest.raises(AttributeError):
         from pydesim import Statistic
         ret.data.source.data_size_stat = Statistic()
+
+    # Check that source records the number of packets being sent:
+    assert ret.data.source.num_packets_sent == 4
 
 
 #############################################################################
@@ -212,12 +215,13 @@ def test_app_data_provides_str():
 #############################################################################
 # TEST Sink MODULE
 #############################################################################
-def test_sink_module_records_delays_arrival_intervals_and_packet_sizes():
+def test_sink_module_records_statistics():
     """Validate that `Sink` module records various statistics.
 
     In this test we check that `Sink` module records end-to-end delays per
     SourceID, inter-arrival intervals and packet sizes (last two statistics
-    are recorded without splitting by SourceID).
+    are recorded without splitting by SourceID). It also records the number of
+    received packets.
 
     To do this, we define a sample simulation with dummy network layer, two
     sources and one sink. Each source generates three messages within given
@@ -274,19 +278,21 @@ def test_sink_module_records_delays_arrival_intervals_and_packet_sizes():
     v = asarray(received_at)
     arrival_intervals = [v[0]] + list(v[1:] - v[:-1])
 
-    # Finally, check that recorded data match the expected:
+    # Check that recorded data match the expected:
     assert isinstance(sink.arrival_intervals, Intervals)
     assert sink.arrival_intervals.as_tuple() == tuple(arrival_intervals)
     assert isinstance(sink.data_size_stat, Statistic)
     assert sink.data_size_stat.as_tuple() == tuple(received_sizes)
+    assert sink.num_packets_received == len(received_sizes)
 
-    # At the end of the test, check that statistics can not be overwritten:
+    # Check that statistics can not be overwritten:
     with pytest.raises(AttributeError):
         sink.arrival_intervals = Intervals()
     with pytest.raises(AttributeError):
         sink.data_size_stat = Statistic()
     with pytest.raises(TypeError):
         sink.source_delays[sids[0]] = Statistic()
+
 
 
 def test_sink_model_implements_str():

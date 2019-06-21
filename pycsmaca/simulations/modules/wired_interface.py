@@ -175,6 +175,10 @@ class WiredTransceiver(Model):
         self.__num_received_bits += frame.size
         self.__rx_busy_trace.record(self.sim.stime, 0)
 
+    def __str__(self):
+        prefix = f'{self.parent}.' if self.parent else ''
+        return f'{prefix}RxTx'
+
 
 class WiredInterface(Model):
     def __init__(self, sim, address, queue, transceiver):
@@ -212,3 +216,7 @@ class WiredInterface(Model):
             self.connections['user'].send(message)
         elif connection.name == '_peer':
             self.connections['wire'].send(message)
+
+    def __str__(self):
+        prefix = f'{self.parent}.' if self.parent else ''
+        return f'{prefix}Interface({self.address})'
