@@ -402,8 +402,6 @@ def test_controlled_source_provides_statistics():
     intervals = (10, 12, 15, 17)
     data_size = (123, 453, 245, 321)
 
-    print('')
-
     class SourceController(Model):
         def __init__(self, sim, src):
             super().__init__(sim)
