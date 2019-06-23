@@ -82,8 +82,98 @@ class _HalfDuplexNetworkBase(Model):
             return self.stations[index].interfaces[-1]
         raise ValueError(f'station index {index} out of bounds')
 
+    @property
+    def clients(self):
+        raise NotImplementedError
+
+    @property
+    def server(self):
+        return NotImplementedError
+
     def __str__(self):
         return 'Network'
+
+    # noinspection PyTypeChecker
+    def describe_topology(self):
+        def str_sid(c):
+            return c.source.source_id if c.source else '<NONE>'
+
+        def str_peers(iface):
+            _peers = self.connection_manager.get_peers(iface.radio)
+            return ", ".join([str(peer.parent.address) for peer in _peers])
+
+        def str_ifaces(c):
+            _prefix = "\n\t\t\t"
+            return _prefix + _prefix.join([
+                f'[addr:{iface.address}], sends to: {str_peers(iface)}'
+                for i, iface in enumerate(c.interfaces)
+            ])
+
+        def str_sw_table(c):
+            d = c.switch.table.as_dict()
+            if not d:
+                return 'EMPTY'
+            return "\n\t\t\t" + "\n\t\t\t".join([
+                f'{key} via {val[1]} (interface "{val[0]}")'
+                for key, val in d.items()
+            ])
+
+        s1 = 'NETWORK TOPOLOGY'
+        s2 = f'- num stations: {self.num_stations}'
+        s3 = '- clients:\n\t' + '\n\t'.join([
+            f'{i}: SID={str_sid(cli)}\n\t\t- interfaces: {str_ifaces(cli)}'
+            f'\n\t\t- switching table:{str_sw_table(cli)}'
+            for i, cli in enumerate(self.clients)
+        ])
+        s4 = f'- server:\n\t\t- interfaces: {str_ifaces(self.server)}'
+        return '\n'.join([s1, s2, s3, s4])
+
+    # noinspection PyUnresolvedReferences
+    def get_stats(self):
+        from collections import namedtuple
+        client_fields = [
+            'index', 'service_time', 'num_retries', 'queue_size', 'tx_busy',
+            'rx_busy', 'arrival_intervals', 'num_packets_sent', 'delay', 'sid',
+            'num_rx_collided', 'num_rx_success',
+        ]
+        server_fields = [
+            'arrival_intervals', 'num_rx_collided', 'num_rx_success',
+            'num_packets_received',
+        ]
+        client_class = namedtuple('Client', client_fields)
+        server_class = namedtuple('Server', server_fields)
+
+        _client_sources = [cli.source for cli in self.clients]
+        _client_ifaces = [cli.interfaces[0] for cli in self.clients]
+        _srv = self.server
+
+        clients = [
+            client_class(
+                index=i,
+                service_time=iface.transmitter.service_time.mean(),
+                num_retries=iface.transmitter.num_retries_vector.mean(),
+                queue_size=iface.queue.size_trace.timeavg(),
+                tx_busy=iface.transmitter.busy_trace.timeavg(),
+                rx_busy=iface.receiver.busy_trace.timeavg(),
+                arrival_intervals=(
+                    src.arrival_intervals.statistic().mean() if src else None),
+                num_packets_sent=iface.transmitter.num_sent,
+                delay=(
+                    _srv.sink.source_delays.get(src.source_id).mean()
+                    if src else None),
+                sid=(src.source_id if src else None),
+                num_rx_collided=iface.receiver.num_collisions,
+                num_rx_success=iface.receiver.num_received,
+            ) for i, (src, iface) in enumerate(
+                zip(_client_sources, _client_ifaces))
+        ]
+        server = server_class(
+            arrival_intervals=_srv.sink.arrival_intervals.statistic().mean(),
+            num_rx_collided=_srv.interfaces[0].receiver.num_collisions,
+            num_rx_success=_srv.interfaces[0].receiver.num_received,
+            num_packets_received=_srv.sink.num_packets_received,
+        )
+        return (client_fields, clients), (server_fields, server)
 
 
 class WirelessHalfDuplexLineNetwork(_HalfDuplexNetworkBase):
@@ -119,6 +209,14 @@ class WirelessHalfDuplexLineNetwork(_HalfDuplexNetworkBase):
                 iface.address + 1
             )
 
+    @property
+    def clients(self):
+        return self.stations[:-1]
+
+    @property
+    def server(self):
+        return self.stations[-1]
+
 
 class CollisionDomainNetwork(_HalfDuplexNetworkBase):
     def __init__(self, sim):
@@ -153,6 +251,14 @@ class CollisionDomainNetwork(_HalfDuplexNetworkBase):
                 switch_conn.name,
                 self.destination_address
             )
+
+    @property
+    def clients(self):
+        return tuple(self.stations[1:])
+
+    @property
+    def server(self):
+        return self.stations[0]
 
 
 class CollisionDomainSaturatedNetwork(CollisionDomainNetwork):
