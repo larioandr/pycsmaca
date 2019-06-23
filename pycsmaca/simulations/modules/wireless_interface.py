@@ -646,6 +646,10 @@ class WirelessInterface(Model):
     def channel_state(self):
         return self.children['channel_state']
 
+    @property
+    def radio(self):
+        return self.children['radio']
+
     def handle_message(self, message, connection=None, sender=None):
         if connection.name == 'user':
             self.connections['_queue'].send(message)

@@ -2,7 +2,7 @@ from pydesim import Model
 
 from pycsmaca.simulations.modules import RandomSource, WiredTransceiver, Queue, \
     WiredInterface
-from .station import Station
+from pycsmaca.simulations.modules.station import Station
 
 
 class WiredLineNetwork(Model):

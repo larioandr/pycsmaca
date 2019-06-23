@@ -34,3 +34,14 @@ class ReadOnlyDict:
 
     def __str__(self):
         return 'RODict' + str(self.__data)
+
+
+def print_children(model):
+    def get_all_leafs(module):
+        children = [module]
+        for child in module.children.all():
+            children.extend(get_all_leafs(child))
+        return children
+
+    for m in get_all_leafs(model):
+        print(str(m))
